@@ -19,7 +19,7 @@ class RandomPartner:
     def predict(self, obs, deterministic=False):
         return np.random.randint(0, len(Action.ALL_ACTIONS)), None
 class OvercookedSelfPlayWrapper(gym.Env):
-    def __init__(self, layout_name="cramped_room", partner_model=None):
+    def __init__(self, layout_name="forced_coordination", partner_model=None):
         super(OvercookedSelfPlayWrapper, self).__init__()
         self.mdp = OvercookedGridworld.from_layout_name(layout_name)
         self.base_env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
@@ -87,7 +87,7 @@ class OvercookedSelfPlayWrapper(gym.Env):
         return ego_obs, total_reward, done, False, info
     
 def train_baseline(total_timesteps = 2000000):
-    raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name="cramped_room"))])
+    raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name="forced_coordination"))])
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
 
     
@@ -119,7 +119,7 @@ def train_baseline(total_timesteps = 2000000):
         
     model.save("overcooked_baseline")
     
-    eval_env = OvercookedSelfPlayWrapper(layout_name="cramped_room")
+    eval_env = OvercookedSelfPlayWrapper(layout_name="forced_coordination")
     eval_env.set_partner_model(PPO.load("overcooked_baseline"))
     return model, eval_env
 
@@ -254,8 +254,6 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5
     frame = pygame.surfarray.pixels3d(surface)
     frame_actual = np.transpose(frame, (1, 0, 2)).copy()
     frames.append(frame_actual)
-
-    print(f"Recording gameplay to {output_file}...")
 
     while not done:
         ego_action_idx, _ = model.predict(obs, deterministic=False)
