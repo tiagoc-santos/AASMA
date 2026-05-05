@@ -1,0 +1,8 @@
+gymnasium
+stable-baselines3[extra]
+overcooked-ai
+numpy<2.0.0
+matplotlib
+scipy
+pygame
+imageio
