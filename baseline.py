@@ -86,7 +86,7 @@ class OvercookedSelfPlayWrapper(gym.Env):
         
         return ego_obs, total_reward, done, False, info
     
-def train_baseline(total_timesteps = 2000000):
+def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"):
     raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name="forced_coordination"))])
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
 
@@ -117,112 +117,129 @@ def train_baseline(total_timesteps = 2000000):
         
         model.learn(total_timesteps=timesteps_per_iteration, reset_num_timesteps=False)
         
-    model.save("overcooked_baseline")
+    model.save(zip_filename)
     
     eval_env = OvercookedSelfPlayWrapper(layout_name="forced_coordination")
-    eval_env.set_partner_model(PPO.load("overcooked_baseline"))
+    eval_env.set_partner_model(PPO.load(zip_filename))
     return model, eval_env
 
 
-def evaluate(model, gym_env, num_episodes=5):
-    base_env = gym_env.base_env 
-    gym_env.set_deterministic_partner(True)
+def check_behavioral_events(agent_action, prev_player, curr_player, mdp):
+    bumped = 0
+    misplaced = 0
+    
+    # Bumped / Failed Movements 
+    if agent_action in Direction.ALL_DIRECTIONS and prev_player.position == curr_player.position:
+        bumped = 1
+        
+    # Misplaced Items 
+    if agent_action == Action.INTERACT and prev_player.has_object() and not curr_player.has_object():
+        pos_x, pos_y = prev_player.position
+        dir_x, dir_y = prev_player.orientation
+        facing_pos = (pos_x + dir_x, pos_y + dir_y)
+
+        if mdp.get_terrain_type_at_pos(facing_pos) == 'X':
+            misplaced = 1
+            
+    return bumped, misplaced
+
+def run_single_episode(model, gym_env, episode_seed):
+    np.random.seed(episode_seed)
+    obs, _ = gym_env.reset()
+    base_env = gym_env.base_env
     mdp = base_env.mdp
     
-    all_ep_scores = []
-    all_ep_time_to_first = []
-    all_ep_avg_time_between = []
-    all_ep_stood_still = []
-    all_ep_bumps = []
-    all_ep_misplaced = []
+    done = False
+    step_count = 0
+    
+    ep_metrics = {
+        'total_score': 0,
+        'dish_delivery_times': [],
+        'stood_still_count': 0,
+        'bump_count': 0,
+        'misplaced_count': 0
+    }
+    heatmap_updates = []
+    
+    prev_state = base_env.state
 
-    heatmap = np.zeros((mdp.width, mdp.height))
-
-    for episode in range(num_episodes):
-        np.random.seed(episode)
-        obs, _ = gym_env.reset()
-        done = False
-        step_count = 0
+    while not done:
+        ego_action_idx, _ = model.predict(obs, deterministic=False)
+        obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
+        done = terminated or truncated
+        step_count += 1
         
-        total_score = 0
-        dish_delivery_times = []
-        stood_still_count = 0
-        bump_count = 0
-        misplaced_count = 0
-
-        prev_state = base_env.state
-
-        while not done:
-            ego_action_idx, _ = model.predict(obs, deterministic=False)
-            
-            obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
-            done = terminated or truncated
-            step_count += 1
-            current_state = base_env.state
-            
-            joint_action = info.get("joint_action", (Action.STAY, Action.STAY))
-            a0, a1 = joint_action
-            
-            # Stood Still Metric
-            if a0 == Action.STAY or a1 == Action.STAY:
-                stood_still_count += 1
-            
-            step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0, 0.0]))
-            
-            if step_sparse_reward > 0:
-                total_score += step_sparse_reward
-                dish_delivery_times.append(step_count)
-
-            # Behavior Metrics Loop
-            for agent_idx in range(2):
-                agent_action = joint_action[agent_idx]
-                prev_player = prev_state.players[agent_idx]
-                curr_player = current_state.players[agent_idx]
-                
-                # Most Visited Tiles 
-                x, y = curr_player.position
-                heatmap[x][y] += 1
-                
-                # Bumped / Failed Movements 
-                if agent_action in Direction.ALL_DIRECTIONS:
-                    if prev_player.position == curr_player.position:
-                        bump_count += 1
-                
-                # Misplaced Items 
-                if agent_action == Action.INTERACT and prev_player.has_object() and not curr_player.has_object():
-                    pos_x, pos_y = prev_player.position
-                    dir_x, dir_y = prev_player.orientation
-                    facing_pos = (pos_x + dir_x, pos_y + dir_y)
-
-                    terrain_type = mdp.get_terrain_type_at_pos(facing_pos)
-
-                    if terrain_type == 'X':
-                        misplaced_count += 1
-
-            prev_state = current_state
-
-        all_ep_scores.append(total_score)
-        all_ep_stood_still.append(stood_still_count)
-        all_ep_bumps.append(bump_count)
-        all_ep_misplaced.append(misplaced_count)
+        current_state = base_env.state
+        joint_action = info.get("joint_action", (Action.STAY, Action.STAY))
         
-        time_to_first = dish_delivery_times[0] if dish_delivery_times else step_count
-        all_ep_time_to_first.append(time_to_first)
-        
-        avg_interval = np.mean(np.diff(dish_delivery_times)) if len(dish_delivery_times) > 1 else 0
-        all_ep_avg_time_between.append(avg_interval)
+        # Stood Still Metric
+        if Action.STAY in joint_action:
+            ep_metrics['stood_still_count'] += 1
+            
+        # Score & Delivery Tracking
+        step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0, 0.0]))
+        if step_sparse_reward > 0:
+            ep_metrics['total_score'] += step_sparse_reward
+            ep_metrics['dish_delivery_times'].append(step_count)
 
+        # Behavior Metrics Loop
+        for agent_idx in range(2):
+            agent_action = joint_action[agent_idx]
+            prev_player = prev_state.players[agent_idx]
+            curr_player = current_state.players[agent_idx]
+            
+            heatmap_updates.append(curr_player.position)
+            
+            bumped, misplaced = check_behavioral_events(agent_action, prev_player, curr_player, mdp)
+            ep_metrics['bump_count'] += bumped
+            ep_metrics['misplaced_count'] += misplaced
+
+        prev_state = current_state
+        
+    return ep_metrics, step_count, heatmap_updates
+
+def print_evaluation_summary(agg_metrics):
     print("\n================================================")
     print("FINAL BASELINE METRICS (Average over episodes)")
     print("================================================")
-    print(f"[Task] Avg Total Score: {np.mean(all_ep_scores):.2f}")
-    print(f"[Task] Avg Time to First Dish: {np.mean(all_ep_time_to_first):.2f} steps")
-    print(f"[Task] Avg Time Between Dishes: {np.mean(all_ep_avg_time_between):.2f} steps")
-    print(f"[Behavior] Avg Times Stood Still: {np.mean(all_ep_stood_still):.2f}")
-    print(f"[Behavior] Avg Bumps/Failed Moves: {np.mean(all_ep_bumps):.2f}")
-    print(f"[Behavior] Avg Misplaced Items: {np.mean(all_ep_misplaced):.2f}")
+    print(f"Avg Total Score: {np.mean(agg_metrics['scores']):.2f}")
+    print(f"Avg Time to First Dish: {np.mean(agg_metrics['time_to_first']):.2f} steps")
+    print(f"Avg Time Between Dishes: {np.mean(agg_metrics['avg_time_between']):.2f} steps")
+    print(f"Avg Times Stood Still: {np.mean(agg_metrics['stood_still']):.2f}")
+    print(f"Avg Bumps/Failed Moves: {np.mean(agg_metrics['bumps']):.2f}")
+    print(f"Avg Misplaced Items: {np.mean(agg_metrics['misplaced']):.2f}")
     print("================================================")
+
+def evaluate(model, gym_env, num_episodes=5):
+    gym_env.set_deterministic_partner(True)
+    mdp = gym_env.base_env.mdp
     
+    agg_metrics = {
+        'scores': [], 'time_to_first': [], 'avg_time_between': [],
+        'stood_still': [], 'bumps': [], 'misplaced': []
+    }
+    
+    heatmap = np.zeros((mdp.width, mdp.height))
+
+    for episode in range(num_episodes):
+        ep_metrics, final_step_count, heatmap_updates = run_single_episode(model, gym_env, episode)
+        
+        for x, y in heatmap_updates:
+            heatmap[x][y] += 1
+            
+        agg_metrics['scores'].append(ep_metrics['total_score'])
+        agg_metrics['stood_still'].append(ep_metrics['stood_still_count'])
+        agg_metrics['bumps'].append(ep_metrics['bump_count'])
+        agg_metrics['misplaced'].append(ep_metrics['misplaced_count'])
+        
+        deliveries = ep_metrics['dish_delivery_times']
+        time_to_first = deliveries[0] if deliveries else final_step_count
+        agg_metrics['time_to_first'].append(time_to_first)
+        
+        avg_interval = np.mean(np.diff(deliveries)) if len(deliveries) > 1 else 0
+        agg_metrics['avg_time_between'].append(avg_interval)
+
+    print_evaluation_summary(agg_metrics)
     render_heatmap(heatmap)
 
 def render_heatmap(heatmap, output_file = "baseline_heatmap.pdf"):
@@ -269,14 +286,12 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5
         frames.append(frame_actual)
 
     pygame.quit()
-    
+
     if output_file.endswith('.gif'):
         duration_ms = 1000 / fps
         imageio.mimsave(output_file, frames, format='GIF', duration=duration_ms, loop=0)
     else:
         imageio.mimsave(output_file, frames, fps=fps, macro_block_size=None)
-        
-    print(f"Done! Gameplay saved with {len(frames)} frames.")
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -284,16 +299,20 @@ if __name__ == "__main__":
                         help='The number of time steps per iteration')
     parser.add_argument('--model', type=str, default=None, 
                         help='The filename of an already trained model')
+    parser.add_argument('--gif_filename', type=str, default="aasma_ego_agent.gif", 
+                        help='The filename of the gif output')
+    parser.add_argument('--zip_filename', type=str, default="overcooked_baseline", 
+                        help='The filename of the model')
     args = parser.parse_args()
     seed = 42
     np.random.seed(seed)
 
     if args.model is None:
-        trained_model, env = train_baseline(args.timesteps)
+        trained_model, env = train_baseline(args.timesteps, args.zip_filename)
     else:
         trained_model = PPO.load(args.model)
         env = OvercookedSelfPlayWrapper() 
 
     env.set_partner_model(trained_model)
     evaluate(trained_model, env, num_episodes=5)
-    save_agent_gameplay(trained_model, env, output_file="aasma_ego_agent.gif")
+    save_agent_gameplay(trained_model, env, output_file=args.gif_filename)
