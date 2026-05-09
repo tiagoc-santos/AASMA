@@ -6,6 +6,7 @@ import pygame
 import imageio
 import os
 import argparse
+import random
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
@@ -14,12 +15,44 @@ from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
+from partner_agents import StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent
 
 class RandomPartner:
     def predict(self, obs, deterministic=False):
         return np.random.randint(0, len(Action.ALL_ACTIONS)), None
+
+
+def build_training_partner_pool(noisy_epsilon=0.25):
+    return [
+        RandomPartner(),
+        StationaryPartner(),
+        GreedyChefAgent(),
+        SpecialistAgent(role='fetcher'),
+        SpecialistAgent(role='plater'),
+        NoisyGreedyAgent(epsilon=noisy_epsilon),
+    ]
+
+
+def make_eval_partner(partner_type, trained_model, noisy_epsilon=0.25):
+    if partner_type == 'ppo':
+        return trained_model
+    if partner_type == 'random':
+        return RandomPartner()
+    if partner_type == 'stationary':
+        return StationaryPartner()
+    if partner_type == 'greedy':
+        return GreedyChefAgent()
+    if partner_type == 'fetcher':
+        return SpecialistAgent(role='fetcher')
+    if partner_type == 'plater':
+        return SpecialistAgent(role='plater')
+    if partner_type == 'noisy_greedy':
+        return NoisyGreedyAgent(epsilon=noisy_epsilon)
+    raise ValueError(f"Unsupported partner_type: {partner_type}")
+
+
 class OvercookedSelfPlayWrapper(gym.Env):
-    def __init__(self, layout_name="forced_coordination", partner_model=None):
+    def __init__(self, layout_name="cramped_room", partner_model=None):
         super(OvercookedSelfPlayWrapper, self).__init__()
         self.mdp = OvercookedGridworld.from_layout_name(layout_name)
         self.base_env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
@@ -34,6 +67,7 @@ class OvercookedSelfPlayWrapper(gym.Env):
         self.observation_space = spaces.Box(low=0, high=1, shape=(flat_obs_size,), dtype=np.float32)
         
         self.partner_model = partner_model
+        self.partner_pool = []
         self.ego_idx = 0 
 
         self.current_obs_tuple = None
@@ -44,11 +78,19 @@ class OvercookedSelfPlayWrapper(gym.Env):
     
     def set_partner_model(self, model):
         self.partner_model = model
+
+    def set_partner_pool(self, pool):
+        self.partner_pool = pool
         
     def reset(self, seed=None, options=None):
         super().reset(seed=seed) 
         self.base_env.reset()
         self.ego_idx = np.random.choice([0, 1])
+
+        # Choose a random partner model from the pool if available, otherwise use the default partner_model
+        if self.partner_pool:
+            self.partner_model = random.choice(self.partner_pool)
+
         self.current_obs_tuple = self.base_env.featurize_state_mdp(self.base_env.state)
         
         return self.current_obs_tuple[self.ego_idx].flatten(), {} 
@@ -59,9 +101,17 @@ class OvercookedSelfPlayWrapper(gym.Env):
         
         if self.partner_model is not None:
             partner_obs = self.current_obs_tuple[partner_idx].flatten()
+            predict_kwargs = dict(deterministic=self.deterministic_partner)
+            if getattr(self.partner_model, 'needs_state', False):
+                predict_kwargs.update(
+                    state=self.base_env.state,
+                    player_idx=partner_idx,
+                    mdp=self.mdp,
+                )
+
             partner_action_idx, _ = self.partner_model.predict(
-                partner_obs, 
-                deterministic=self.deterministic_partner
+                partner_obs,
+                **predict_kwargs
             )
             partner_action_str = Action.INDEX_TO_ACTION[partner_action_idx]
         else:
@@ -86,8 +136,9 @@ class OvercookedSelfPlayWrapper(gym.Env):
         
         return ego_obs, total_reward, done, False, info
     
-def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"):
-    raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name="forced_coordination"))])
+def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline",
+                   train_partner_mode="curriculum", train_noisy_epsilon=0.25):
+    raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name="cramped_room"))])
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
 
     
@@ -104,22 +155,29 @@ def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"
     
     iterations = 10
     timesteps_per_iteration = total_timesteps // iterations
+    training_partner_pool = build_training_partner_pool(noisy_epsilon=train_noisy_epsilon)
+
+    if train_partner_mode == "random_pool":
+        env.venv.envs[0].env.set_partner_pool(training_partner_pool)
     
     for i in range(iterations):
         print(f"Iteration {i+1}/{iterations}")
-        if i == 0:
-            env.venv.envs[0].env.set_partner_model(RandomPartner())
-            env.venv.envs[0].env.set_deterministic_partner(False)
+        if train_partner_mode == "random_pool":
+            pass
         else:
-            model.save("temp_partner_model")
-            partner_model = PPO.load("temp_partner_model")
-            env.venv.envs[0].env.set_partner_model(partner_model)
+            if i == 0:
+                env.venv.envs[0].env.set_partner_model(RandomPartner())
+                env.venv.envs[0].env.set_deterministic_partner(False)
+            else:
+                model.save("temp_partner_model")
+                partner_model = PPO.load("temp_partner_model")
+                env.venv.envs[0].env.set_partner_model(partner_model)
         
         model.learn(total_timesteps=timesteps_per_iteration, reset_num_timesteps=False)
         
     model.save(zip_filename)
     
-    eval_env = OvercookedSelfPlayWrapper(layout_name="forced_coordination")
+    eval_env = OvercookedSelfPlayWrapper(layout_name="cramped_room")
     eval_env.set_partner_model(PPO.load(zip_filename))
     return model, eval_env
 
@@ -210,8 +268,8 @@ def print_evaluation_summary(agg_metrics):
     print(f"Avg Misplaced Items: {np.mean(agg_metrics['misplaced']):.2f}")
     print("================================================")
 
-def evaluate(model, gym_env, num_episodes=5):
-    gym_env.set_deterministic_partner(True)
+def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True):
+    gym_env.set_deterministic_partner(deterministic_partner)
     mdp = gym_env.base_env.mdp
     
     agg_metrics = {
@@ -252,13 +310,13 @@ def render_heatmap(heatmap, output_file = "baseline_heatmap.pdf"):
     plt.close()
 
 
-def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5):
+def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5, deterministic_partner=True):
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
     
     visualizer = StateVisualizer()
 
-    gym_env.set_deterministic_partner(True)
+    gym_env.set_deterministic_partner(deterministic_partner)
     
     obs, _ = gym_env.reset()
     done = False
@@ -303,16 +361,37 @@ if __name__ == "__main__":
                         help='The filename of the gif output')
     parser.add_argument('--zip_filename', type=str, default="overcooked_baseline", 
                         help='The filename of the model')
+    parser.add_argument('--train_partner_mode', type=str, default='curriculum',
+                        choices=['curriculum', 'random_pool'],
+                        help='Training partner schedule: curriculum (default) or random_pool')
+    parser.add_argument('--train_noisy_epsilon', type=float, default=0.25,
+                        help='Epsilon used for NoisyGreedyAgent in training partner pool')
+    parser.add_argument('--eval_partner', type=str, default='ppo',
+                        choices=['ppo', 'random', 'stationary', 'greedy', 'fetcher', 'plater', 'noisy_greedy'],
+                        help='Partner to use during evaluation and gameplay rendering')
+    parser.add_argument('--eval_partner_epsilon', type=float, default=0.25,
+                        help='Epsilon for noisy_greedy evaluation partner')
+    parser.add_argument('--deterministic_partner', type=str, default='true',
+                        choices=['true', 'false'],
+                        help='Whether partner uses deterministic actions during eval/rendering')
     args = parser.parse_args()
+    deterministic_partner = args.deterministic_partner.lower() == 'true'
     seed = 42
     np.random.seed(seed)
 
     if args.model is None:
-        trained_model, env = train_baseline(args.timesteps, args.zip_filename)
+        trained_model, env = train_baseline(
+            args.timesteps,
+            args.zip_filename,
+            train_partner_mode=args.train_partner_mode,
+            train_noisy_epsilon=args.train_noisy_epsilon,
+        )
     else:
         trained_model = PPO.load(args.model)
         env = OvercookedSelfPlayWrapper() 
 
-    env.set_partner_model(trained_model)
-    evaluate(trained_model, env, num_episodes=5)
-    save_agent_gameplay(trained_model, env, output_file=args.gif_filename)
+    env.set_partner_model(
+        make_eval_partner(args.eval_partner, trained_model, noisy_epsilon=args.eval_partner_epsilon)
+    )
+    evaluate(trained_model, env, num_episodes=5, deterministic_partner=deterministic_partner)
+    save_agent_gameplay(trained_model, env, output_file=args.gif_filename, deterministic_partner=deterministic_partner)
