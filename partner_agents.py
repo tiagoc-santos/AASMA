@@ -190,6 +190,7 @@ class GreedyChefAgent:
         pot_states  = mdp.get_pot_states(state)
 
         ready_pots  = pot_states.get('ready', []) + pot_states.get('both_ready', [])
+        full_pots = pot_states.get('3_items', [])
         empty_pots  = (pot_states.get('empty', [])
                        + pot_states.get('1_items', [])
                        + pot_states.get('2_items', []))
@@ -209,12 +210,16 @@ class GreedyChefAgent:
         if held_name == 'onion' and empty_pots:
             return closest(empty_pots, player.position)
 
-        # 4. Pot ready + hands free → grab a dish first
+        # 4. Pot full + hands free → start cooking
+        if held is None and full_pots:
+            return closest(full_pots, player.position)
+
+        # 5. Pot ready + hands free → grab a dish first
         if held is None and ready_pots:
             dishes = mdp.get_dish_dispenser_locations()
             return closest(dishes, player.position)
-
-        # 5. Pot needs onions + hands free → grab onion
+        
+        # 6. Pot needs onions + hands free → fetch an onion
         if held is None and empty_pots:
             onions = mdp.get_onion_dispenser_locations()
             return closest(onions, player.position)
@@ -263,6 +268,7 @@ class SpecialistAgent:
         held_name  = held.name if held else None
         pot_states = mdp.get_pot_states(state)
         ready_pots = pot_states.get('ready', []) + pot_states.get('both_ready', [])
+        full_pots = pot_states.get('3_items', [])
         empty_pots = (pot_states.get('empty', [])
                       + pot_states.get('1_items', [])
                       + pot_states.get('2_items', []))
@@ -271,10 +277,15 @@ class SpecialistAgent:
             # Only cares about onions → pots
             if held_name == 'onion' and empty_pots:
                 return closest(empty_pots, player.position)
+
+            if held is None and full_pots:
+                return closest(full_pots, player.position)
+
             if held is None and empty_pots:
                 onions = mdp.get_onion_dispenser_locations()
                 return closest(onions, player.position)
-            return None   # nothing to do in this role right now
+
+            return None
 
         else:  # 'plater'
             # Deliver soup if carrying it
