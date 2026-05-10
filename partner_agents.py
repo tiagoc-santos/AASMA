@@ -1,8 +1,4 @@
 """
-partner_agents.py
------------------
-Diverse partner agents for Overcooked Ad Hoc Teamwork project.
-
 Each agent implements:
     predict(obs, state=None, player_idx=None, mdp=None, deterministic=False)
              -> (action_idx: int, None)
@@ -10,24 +6,16 @@ Each agent implements:
 The `state`, `player_idx`, and `mdp` kwargs are only used by heuristic agents.
 The observation-only interface (RandomPartner, NoisyPPOPartner) remains
 compatible with the original wrapper without any changes.
-
-To enable state-based agents, apply the small patch shown at the bottom of
-this file to OvercookedSelfPlayWrapper.step().
 """
 
 import numpy as np
 from collections import deque
 from overcooked_ai_py.mdp.actions import Action, Direction
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 ACTION_TO_IDX = {a: i for i, a in enumerate(Action.ALL_ACTIONS)}
 N_ACTIONS     = len(Action.ALL_ACTIONS)
 
-# Overcooked direction vectors (x-right, y-down)
+# Direction vectors (x-right, y-down)
 DIR_VECTORS = {
     Direction.NORTH: (0, -1),
     Direction.SOUTH: (0,  1),
@@ -36,7 +24,7 @@ DIR_VECTORS = {
 }
 
 
-#Usada para criar uma trajetoria de acoes para os agentes que seguem uma heuristica
+# Used to create a trajectory of actions for the agents that follow an heuristic
 def bfs_next_action(start, target_pos, mdp, state, player_idx):
     """
     Goal:
@@ -108,10 +96,9 @@ def bfs_next_action(start, target_pos, mdp, state, player_idx):
                 visited.add((nx, ny))
                 queue.append(((nx, ny), first_action))
 
-    # No route to a tile adjacent to target.
     return Action.STAY
 
-#Gives the closest objective when there are multiple
+# Gives the closest objective when there are multiple
 def closest(positions, reference):
     """Return the position in `positions` closest (L1) to `reference`."""
     if not positions:
@@ -119,23 +106,13 @@ def closest(positions, reference):
     rx, ry = reference
     return min(positions, key=lambda p: abs(p[0] - rx) + abs(p[1] - ry))
 
-
-# ---------------------------------------------------------------------------
-# 1. RandomPartner  (already in baseline – reproduced here for completeness)
-# ---------------------------------------------------------------------------
-
 class RandomPartner:
     """Uniformly random actions. Worst-case coordination partner."""
 
     def predict(self, obs, state=None, player_idx=None, mdp=None,
                 deterministic=False):
         return np.random.randint(0, N_ACTIONS), None
-
-
-# ---------------------------------------------------------------------------
-# 2. StationaryPartner
-# ---------------------------------------------------------------------------
-
+    
 class StationaryPartner:
     """
     Always stays still.
@@ -146,11 +123,6 @@ class StationaryPartner:
     def predict(self, obs, state=None, player_idx=None, mdp=None,
                 deterministic=False):
         return ACTION_TO_IDX[Action.STAY], None
-
-
-# ---------------------------------------------------------------------------
-# 3. GreedyChefAgent
-# ---------------------------------------------------------------------------
 
 class GreedyChefAgent:
     """
@@ -184,7 +156,6 @@ class GreedyChefAgent:
         action = bfs_next_action(player.position, target_pos, mdp, state, player_idx)
         return ACTION_TO_IDX[action], None
 
-    # ------------------------------------------------------------------
     def _choose_target(self, state, player, mdp):
         held        = player.held_object
         pot_states  = mdp.get_pot_states(state)
@@ -197,39 +168,34 @@ class GreedyChefAgent:
 
         held_name = held.name if held else None
 
-        # 1. Deliver soup
+        # Deliver soup
         if held_name == 'soup':
             serving = mdp.get_serving_locations()
             return closest(serving, player.position)
 
-        # 2. Holding dish + pot ready → go to pot to pick up soup
+        # Holding dish + pot ready → go to pot to pick up soup
         if held_name == 'dish' and ready_pots:
             return closest(ready_pots, player.position)
 
-        # 3. Holding onion + pot needs filling
+        # Holding onion + pot needs filling
         if held_name == 'onion' and empty_pots:
             return closest(empty_pots, player.position)
 
-        # 4. Pot full + hands free → start cooking
+        # Pot full + hands free → start cooking
         if held is None and full_pots:
             return closest(full_pots, player.position)
 
-        # 5. Pot ready + hands free → grab a dish first
+        # Pot ready + hands free → grab a dish first
         if held is None and ready_pots:
             dishes = mdp.get_dish_dispenser_locations()
             return closest(dishes, player.position)
         
-        # 6. Pot needs onions + hands free → fetch an onion
+        # Pot needs onions + hands free → fetch an onion
         if held is None and empty_pots:
             onions = mdp.get_onion_dispenser_locations()
             return closest(onions, player.position)
 
         return None
-
-
-# ---------------------------------------------------------------------------
-# 4. SpecialistAgent
-# ---------------------------------------------------------------------------
 
 class SpecialistAgent:
     """
@@ -262,7 +228,6 @@ class SpecialistAgent:
         action = bfs_next_action(player.position, target_pos, mdp, state, player_idx)
         return ACTION_TO_IDX[action], None
 
-    # ------------------------------------------------------------------
     def _choose_target(self, state, player, mdp):
         held       = player.held_object
         held_name  = held.name if held else None
@@ -274,7 +239,7 @@ class SpecialistAgent:
                       + pot_states.get('2_items', []))
 
         if self.role == 'fetcher':
-            # Only cares about onions → pots
+            # Only cares about onions -> pots
             if held_name == 'onion' and empty_pots:
                 return closest(empty_pots, player.position)
 
@@ -297,19 +262,14 @@ class SpecialistAgent:
             if held_name == 'soup':
                 serving = mdp.get_serving_locations()
                 return closest(serving, player.position)
-            # Holding dish → go to ready pot
+            # Holding dish -> go to ready pot
             if held_name == 'dish' and ready_pots:
                 return closest(ready_pots, player.position)
-            # Nothing held + pot ready → fetch dish
+            # Nothing held + pot ready -> fetch dish
             if held is None and ready_pots:
                 dishes = mdp.get_dish_dispenser_locations()
                 return closest(dishes, player.position)
             return None
-
-
-# ---------------------------------------------------------------------------
-# 5. NoisyGreedyAgent
-# ---------------------------------------------------------------------------
 
 class NoisyGreedyAgent(GreedyChefAgent):
     """
@@ -335,11 +295,6 @@ class NoisyGreedyAgent(GreedyChefAgent):
             return np.random.randint(0, N_ACTIONS), None
         return super().predict(obs, state=state, player_idx=player_idx,
                                mdp=mdp, deterministic=deterministic)
-
-
-# ---------------------------------------------------------------------------
-# 6. NoisyPPOPartner  (wraps a pre-trained PPO checkpoint)
-# ---------------------------------------------------------------------------
 
 class NoisyPPOPartner:
     """
