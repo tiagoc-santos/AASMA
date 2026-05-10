@@ -7,6 +7,8 @@ import imageio
 import os
 import argparse
 import random
+import csv
+from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
@@ -137,8 +139,9 @@ class OvercookedSelfPlayWrapper(gym.Env):
         return ego_obs, total_reward, done, False, info
     
 def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline",
-                   train_partner_mode="curriculum", train_noisy_epsilon=0.25):
-    raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name="cramped_room"))])
+                   train_partner_mode="curriculum", train_noisy_epsilon=0.25,
+                   layout_name="cramped_room"):
+    raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name=layout_name))])
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
 
     
@@ -177,7 +180,7 @@ def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"
         
     model.save(zip_filename)
     
-    eval_env = OvercookedSelfPlayWrapper(layout_name="cramped_room")
+    eval_env = OvercookedSelfPlayWrapper(layout_name=layout_name)
     eval_env.set_partner_model(PPO.load(zip_filename))
     return model, eval_env
 
@@ -274,7 +277,7 @@ def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True):
     
     agg_metrics = {
         'scores': [], 'time_to_first': [], 'avg_time_between': [],
-        'stood_still': [], 'bumps': [], 'misplaced': []
+        'stood_still': [], 'bumps': [], 'misplaced': [], 'deliveries': []
     }
     
     heatmap = np.zeros((mdp.width, mdp.height))
@@ -291,6 +294,7 @@ def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True):
         agg_metrics['misplaced'].append(ep_metrics['misplaced_count'])
         
         deliveries = ep_metrics['dish_delivery_times']
+        agg_metrics['deliveries'].append(len(deliveries))
         time_to_first = deliveries[0] if deliveries else final_step_count
         agg_metrics['time_to_first'].append(time_to_first)
         
@@ -299,6 +303,87 @@ def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True):
 
     print_evaluation_summary(agg_metrics)
     render_heatmap(heatmap)
+
+    summary = {
+        "avg_total_score": float(np.mean(agg_metrics["scores"])),
+        "std_total_score": float(np.std(agg_metrics["scores"])),
+        "avg_time_to_first": float(np.mean(agg_metrics["time_to_first"])),
+        "avg_time_between": float(np.mean(agg_metrics["avg_time_between"])),
+        "avg_stood_still": float(np.mean(agg_metrics["stood_still"])),
+        "avg_bumps": float(np.mean(agg_metrics["bumps"])),
+        "avg_misplaced": float(np.mean(agg_metrics["misplaced"])),
+        "avg_deliveries": float(np.mean(agg_metrics["deliveries"])),
+        "success_rate": float(np.mean([score > 0 for score in agg_metrics["scores"]])),
+    }
+    return summary
+
+
+def evaluation_result(csv_file, result_row):
+    """
+    Stores one summary row per (layout_name, eval_partner).
+
+    If the same layout and partner already exist in the CSV, that row is replaced.
+    If it is a new layout or a new partner for the same layout, a new row is added.
+    """
+    key_fields = ("layout_name", "eval_partner")
+    fieldnames = [
+        "timestamp",
+        "layout_name",
+        "eval_partner",
+        "num_episodes",
+        "deterministic_partner",
+        "model_file",
+        "train_partner_mode",
+        "avg_total_score",
+        "std_total_score",
+        "avg_time_to_first",
+        "avg_time_between",
+        "avg_stood_still",
+        "avg_bumps",
+        "avg_misplaced",
+        "avg_deliveries",
+        "success_rate",
+    ]
+
+    rows = []
+    previous_score = None
+
+    if os.path.exists(csv_file):
+        with open(csv_file, "r", newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                same_key = all(row.get(k) == str(result_row.get(k)) for k in key_fields)
+
+                if same_key:
+                    previous_score = float(row.get("avg_total_score", 0) or 0)
+                else:
+                    rows.append(row)
+
+    clean_row = {field: result_row.get(field, "") for field in fieldnames}
+    rows.append(clean_row)
+
+    rows.sort(
+        key=lambda row: float(row.get("avg_total_score", 0) or 0),
+        reverse=True
+    )
+
+    with open(csv_file, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    current_score = float(result_row.get("avg_total_score", 0) or 0)
+
+    print(f"Results saved/updated in {csv_file} for layout='{result_row['layout_name']}' and partner='{result_row['eval_partner']}'\n")
+
+    if previous_score is None:
+        print(f"No previous result for this layout/partner. Current average score: {current_score:.2f}\n")
+    elif current_score > previous_score:
+        print(f"Average score improved: {previous_score:.2f} -> {current_score:.2f}\n")
+    elif current_score < previous_score:
+        print(f"Average score got worse: {previous_score:.2f} -> {current_score:.2f}\n")
+    else:
+        print(f"Average score stayed the same: {current_score:.2f}\n")
 
 def render_heatmap(heatmap, output_file = "baseline_heatmap.pdf"):
     plt.imshow(heatmap.T, cmap='hot', interpolation='nearest')
@@ -357,6 +442,8 @@ if __name__ == "__main__":
                         help='The number of time steps per iteration')
     parser.add_argument('--model', type=str, default=None, 
                         help='The filename of an already trained model')
+    parser.add_argument('--layout_name', type=str, default='cramped_room',
+                        help='Overcooked layout/room to train/evaluate on')
     parser.add_argument('--gif_filename', type=str, default="aasma_ego_agent.gif", 
                         help='The filename of the gif output')
     parser.add_argument('--zip_filename', type=str, default="overcooked_baseline", 
@@ -374,6 +461,10 @@ if __name__ == "__main__":
     parser.add_argument('--deterministic_partner', type=str, default='true',
                         choices=['true', 'false'],
                         help='Whether partner uses deterministic actions during eval/rendering')
+    parser.add_argument('--eval_episodes', type=int, default=20,
+                        help='Number of episodes used during evaluation')
+    parser.add_argument('--results_csv', type=str, default='evaluation_results.csv',
+                        help='CSV file where evaluation summaries are stored')
     args = parser.parse_args()
     deterministic_partner = args.deterministic_partner.lower() == 'true'
     seed = 42
@@ -385,13 +476,33 @@ if __name__ == "__main__":
             args.zip_filename,
             train_partner_mode=args.train_partner_mode,
             train_noisy_epsilon=args.train_noisy_epsilon,
+            layout_name=args.layout_name,
         )
     else:
         trained_model = PPO.load(args.model)
-        env = OvercookedSelfPlayWrapper() 
+        env = OvercookedSelfPlayWrapper(layout_name=args.layout_name) 
 
     env.set_partner_model(
         make_eval_partner(args.eval_partner, trained_model, noisy_epsilon=args.eval_partner_epsilon)
     )
-    evaluate(trained_model, env, num_episodes=5, deterministic_partner=deterministic_partner)
+
+    summary = evaluate(
+        trained_model,
+        env,
+        num_episodes=args.eval_episodes,
+        deterministic_partner=deterministic_partner,
+    )
+
+    result_row = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "layout_name": args.layout_name,
+        "eval_partner": args.eval_partner,
+        "num_episodes": args.eval_episodes,
+        "deterministic_partner": deterministic_partner,
+        "model_file": args.model if args.model is not None else args.zip_filename,
+        "train_partner_mode": args.train_partner_mode if args.model is None else "loaded_model",
+        **summary,
+    }
+    evaluation_result(args.results_csv, result_row)
+
     save_agent_gameplay(trained_model, env, output_file=args.gif_filename, deterministic_partner=deterministic_partner)
