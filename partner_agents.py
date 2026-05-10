@@ -284,6 +284,11 @@ class SpecialistAgent:
             if held is None and empty_pots:
                 onions = mdp.get_onion_dispenser_locations()
                 return closest(onions, player.position)
+            
+            # If there is nothing useful to do, move away from the pot
+            if held is None:
+                onions = mdp.get_onion_dispenser_locations()
+                return closest(onions, player.position)
 
             return None
 
