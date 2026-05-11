@@ -230,7 +230,7 @@ def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--timesteps', type=int, default=500000, 
+    parser.add_argument('--timesteps', type=int, default=2000000, 
                         help='The number of time steps per iteration')
     parser.add_argument('--model', type=str, default=None, 
                         help='The filename of an already trained model')
