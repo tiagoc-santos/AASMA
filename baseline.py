@@ -8,6 +8,7 @@ import os
 import argparse
 import random
 import csv
+import ast
 from datetime import datetime
 from stable_baselines3 import PPO
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -76,6 +77,30 @@ def make_eval_partner(partner_type, trained_model, noisy_epsilon=0.25):
         return NoisyGreedyAgent(epsilon=noisy_epsilon)
     raise ValueError(f"Unsupported partner_type: {partner_type}")
 
+def load_layout(layout_name):
+    local_layout_path = os.path.join("layouts", f"{layout_name}.layout")
+
+    if os.path.exists(local_layout_path):
+        with open(local_layout_path, "r", encoding="utf-8") as f:
+            layout_dict = ast.literal_eval(f.read())
+
+        grid = layout_dict["grid"]
+        del layout_dict["grid"]
+
+        layout_dict["layout_name"] = layout_name
+
+        layout_grid = [
+            row.strip()
+            for row in grid.split("\n")
+            if row.strip() != ""
+        ]
+
+        return OvercookedGridworld.from_grid(
+            layout_grid,
+            base_layout_params=layout_dict
+        )
+
+    return OvercookedGridworld.from_layout_name(layout_name)
 
 class OvercookedSelfPlayWrapper(gym.Env):
     """Gym wrapper exposing one Overcooked player as the learning ego agent.
@@ -85,89 +110,134 @@ class OvercookedSelfPlayWrapper(gym.Env):
     flattened per-player observations.
     """
 
-    def __init__(self, layout_name="cramped_room", partner_model=None):
+    def __init__(self, layout_name="cramped_room", partner_models=None):
         super(OvercookedSelfPlayWrapper, self).__init__()
-        self.mdp = OvercookedGridworld.from_layout_name(layout_name)
+        self.mdp = load_layout(layout_name)
         self.base_env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
         self.num_actions = len(Action.ALL_ACTIONS)
-        
+        self.num_players = self.mdp.num_players
         self.action_space = spaces.Discrete(self.num_actions)
-        
         self.base_env.reset()
-        dummy_obs = self.base_env.featurize_state_mdp(self.base_env.state)[0]
-        flat_obs_size = np.prod(dummy_obs.shape)
-        
-        self.observation_space = spaces.Box(low=0, high=1, shape=(flat_obs_size,), dtype=np.float32)
-        
-        self.partner_model = partner_model
-        self.partner_pool = []
-        self.ego_idx = 0 
 
-        self.current_obs_tuple = None
+        flat_obs_size = self.num_players * 6
+        self.observation_space = spaces.Box(
+            low=-1,
+            high=1,
+            shape=(flat_obs_size,),
+            dtype=np.float32
+        )
+        
+        self.partner_models = partner_models or [None] * self.num_players
+        self.partner_pool = []
+        self.ego_idx = 0
+
+        self.current_obs = None
         self.deterministic_partner = False
 
     def set_deterministic_partner(self, is_deterministic):
         self.deterministic_partner = is_deterministic
     
-    def set_partner_model(self, model):
-        self.partner_model = model
+    def set_partner_models(self, models):
+        self.partner_models = models
 
     def set_partner_pool(self, pool):
         self.partner_pool = pool
         
     def reset(self, seed=None, options=None):
-        super().reset(seed=seed) 
+        super().reset(seed=seed)
         self.base_env.reset()
-        self.ego_idx = np.random.choice([0, 1])
 
-        # Choose a random partner model from the pool if available, otherwise use the default partner_model
+        self.ego_idx = np.random.choice(self.num_players)
+
         if self.partner_pool:
-            self.partner_model = random.choice(self.partner_pool)
+            self.partner_models = [None] * self.num_players
 
-        self.current_obs_tuple = self.base_env.featurize_state_mdp(self.base_env.state)
-        
-        return self.current_obs_tuple[self.ego_idx].flatten(), {} 
+            for i in range(self.num_players):
+                if i != self.ego_idx:
+                    self.partner_models[i] = random.choice(self.partner_pool)
+
+        self.current_obs = self.make_simple_obs(self.ego_idx)
+
+        return self.current_obs, {}
 
     def step(self, action):
-        ego_action_str = Action.INDEX_TO_ACTION[action]
-        partner_idx = 1 - self.ego_idx
-        
-        if self.partner_model is not None:
-            partner_obs = self.current_obs_tuple[partner_idx].flatten()
-            predict_kwargs = dict(deterministic=self.deterministic_partner)
-            if getattr(self.partner_model, 'needs_state', False):
-                predict_kwargs.update(
-                    state=self.base_env.state,
-                    player_idx=partner_idx,
-                    mdp=self.mdp,
+        ego_action_str = Action.INDEX_TO_ACTION[int(action)]
+
+        partner_indices = [
+            i for i in range(self.num_players)
+            if i != self.ego_idx
+        ]
+
+        joint_action = [Action.STAY] * self.num_players
+        joint_action[self.ego_idx] = ego_action_str
+
+        for partner_idx in partner_indices:
+            partner_model = self.partner_models[partner_idx]
+
+            if partner_model is not None:
+                partner_obs = self.make_simple_obs(partner_idx)
+
+                predict_kwargs = dict(deterministic=self.deterministic_partner)
+
+                if getattr(partner_model, 'needs_state', False):
+                    predict_kwargs.update(
+                        state=self.base_env.state,
+                        player_idx=partner_idx,
+                        mdp=self.mdp,
+                    )
+
+                partner_action_idx, _ = partner_model.predict(
+                    partner_obs,
+                    **predict_kwargs
                 )
 
-            partner_action_idx, _ = self.partner_model.predict(
-                partner_obs,
-                **predict_kwargs
-            )
-            partner_action_str = Action.INDEX_TO_ACTION[partner_action_idx]
-        else:
-            partner_action_str = Action.STAY
-            
-        if self.ego_idx == 0:
-            joint_action = (ego_action_str, partner_action_str)
-        else:
-            joint_action = (partner_action_str, ego_action_str)
-        
-        next_state, sparse_reward, done, info = self.base_env.step(joint_action)
-        
-        self.current_obs_tuple = self.base_env.featurize_state_mdp(self.base_env.state)
-        
-        step_dense_rewards = info.get('shaped_r_by_agent', [0.0, 0.0])
+                partner_action_str = Action.INDEX_TO_ACTION[int(partner_action_idx)]
+            else:
+                partner_action_str = Action.STAY
+
+            joint_action[partner_idx] = partner_action_str
+
+        joint_action = tuple(joint_action)
+
+        joint_agent_action_info = [{} for _ in range(self.num_players)]
+
+        next_state, sparse_reward, done, info = self.base_env.step(joint_action, joint_agent_action_info)
+
+        self.current_obs = self.make_simple_obs()
+
+        step_dense_rewards = info.get(
+            'shaped_r_by_agent',
+            [0.0] * self.num_players
+        )
+
         total_reward = sparse_reward + sum(step_dense_rewards)
-        
+
         info["joint_action"] = joint_action
-        info["ego_idx"] = self.ego_idx 
-        
-        ego_obs = self.current_obs_tuple[self.ego_idx].flatten()
-        
+        info["ego_idx"] = self.ego_idx
+        info["partner_indices"] = partner_indices
+
+        ego_obs = self.current_obs
+
         return ego_obs, total_reward, done, False, info
+    
+    def make_simple_obs(self, controlled_idx=None):
+        if controlled_idx is None:
+            controlled_idx = self.ego_idx
+
+        state = self.base_env.state
+        features = []
+
+        for i, player in enumerate(state.players):
+            features.extend([
+                player.position[0] / self.mdp.width,
+                player.position[1] / self.mdp.height,
+                player.orientation[0],
+                player.orientation[1],
+                1.0 if player.has_object() else 0.0,
+                1.0 if i == controlled_idx else 0.0,
+            ])
+
+        return np.array(features, dtype=np.float32)
     
 def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline",
                    train_partner_mode="curriculum", train_noisy_epsilon=0.25,
@@ -208,23 +278,27 @@ def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"
     
     for i in range(iterations):
         print(f"Iteration {i+1}/{iterations}")
+
+        wrapper = env.venv.envs[0].env
+
         if train_partner_mode == "random_pool":
             pass
         else:
             if i == 0:
-                env.venv.envs[0].env.set_partner_model(RandomPartner())
-                env.venv.envs[0].env.set_deterministic_partner(False)
+                wrapper.set_partner_models([RandomPartner()] * wrapper.num_players)
+                wrapper.set_deterministic_partner(False)
             else:
                 model.save("temp_partner_model")
                 partner_model = PPO.load("temp_partner_model")
-                env.venv.envs[0].env.set_partner_model(partner_model)
-        
+                wrapper.set_partner_models([partner_model] * wrapper.num_players)
+
         model.learn(total_timesteps=timesteps_per_iteration, reset_num_timesteps=False)
         
     model.save(zip_filename)
     
     eval_env = OvercookedSelfPlayWrapper(layout_name=layout_name)
-    eval_env.set_partner_model(PPO.load(zip_filename))
+    loaded_partner = PPO.load(zip_filename)
+    eval_env.set_partner_models([loaded_partner] * eval_env.num_players)
     return model, eval_env
 
     
@@ -274,9 +348,13 @@ if __name__ == "__main__":
         trained_model = PPO.load(args.model)
         env = OvercookedSelfPlayWrapper(layout_name=args.layout_name) 
 
-    env.set_partner_model(
-        make_eval_partner(args.eval_partner, trained_model, noisy_epsilon=args.eval_partner_epsilon)
+    eval_partner = make_eval_partner(
+        args.eval_partner,
+        trained_model,
+        noisy_epsilon=args.eval_partner_epsilon
     )
+
+    env.set_partner_models([eval_partner] * env.num_players)
 
     summary = evaluate(
         trained_model,

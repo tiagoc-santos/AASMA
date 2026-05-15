@@ -55,20 +55,23 @@ def run_single_episode(model, gym_env, episode_seed):
         step_count += 1
         
         current_state = base_env.state
-        joint_action = info.get("joint_action", (Action.STAY, Action.STAY))
-        
+        num_players = len(current_state.players)
+        joint_action = info.get("joint_action", tuple([Action.STAY] * num_players))
+
         # Stood Still Metric
-        if Action.STAY in joint_action:
-            ep_metrics['stood_still_count'] += 1
+        ep_metrics['stood_still_count'] += sum(
+            1 for action in joint_action
+            if action == Action.STAY
+        )
             
         # Score & Delivery Tracking
-        step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0, 0.0]))
+        step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0] * num_players))
         if step_sparse_reward > 0:
             ep_metrics['total_score'] += step_sparse_reward
             ep_metrics['dish_delivery_times'].append(step_count)
 
         # Behavior Metrics Loop
-        for agent_idx in range(2):
+        for agent_idx in range(num_players):
             agent_action = joint_action[agent_idx]
             prev_player = prev_state.players[agent_idx]
             curr_player = current_state.players[agent_idx]
@@ -208,6 +211,15 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5
     pygame.init()
     
     visualizer = StateVisualizer()
+
+    extra_colors = ["red", "yellow", "purple", "orange", "cyan", "magenta", "brown"]
+
+    while len(visualizer.player_colors) < gym_env.num_players:
+        next_color = extra_colors[
+            (len(visualizer.player_colors) - 2) % len(extra_colors)
+        ]
+        visualizer.player_colors.append(next_color)
+
     gym_env.set_deterministic_partner(deterministic_partner)
     
     obs, _ = gym_env.reset()
