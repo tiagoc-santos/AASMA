@@ -2,4 +2,6 @@ timestamp,layout_name,eval_partner,num_episodes,deterministic_partner,model_file
 2026-05-10T12:20:54,cramped_room,fetcher,20,True,overcooked_baseline.zip,loaded_model,202.0,10.770329614269007,46.3,36.85222222222222,257.3,129.8,0.65,10.1,1.0
 2026-05-10T11:58:34,cramped_room,ppo,20,True,overcooked_baseline.zip,loaded_model,184.0,14.966629547095765,49.1,40.165376984126986,94.3,216.35,2.75,9.2,1.0
 2026-05-10T11:57:55,cramped_room,greedy,20,True,overcooked_baseline.zip,loaded_model,127.0,27.03701166919155,54.7,58.06908730158731,289.65,150.5,3.75,6.35,1.0
+2026-05-16T12:15:30,three_chefs,greedy,20,True,overcooked_baseline.zip,loaded_model,58.0,67.79380502671317,155.6,17.2,176.75,774.15,0.15,2.9,0.7
 2026-05-10T12:18:21,cramped_room,stationary,20,True,overcooked_baseline.zip,loaded_model,8.0,13.2664991614216,349.2,10.0,400.0,111.1,3.9,0.4,0.3
+2026-05-16T12:04:18,three_chefs,ppo,20,True,overcooked_baseline,random_pool,0.0,0.0,400.0,0.0,249.85,625.45,0.5,0.0,0.0

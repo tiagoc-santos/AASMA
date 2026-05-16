@@ -18,32 +18,27 @@ from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from stable_baselines3.common.monitor import Monitor
-from partner_agents import StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent
+from partner_agents import RandomPartner, StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent
 from evaluation import evaluate, evaluation_result, save_agent_gameplay
 
-class RandomPartner:
-    """Partner agent that samples a random action at every step."""
-
-    def predict(self, obs, deterministic=False):
-        return np.random.randint(0, len(Action.ALL_ACTIONS)), None
-
-
 def build_training_partner_pool(noisy_epsilon=0.25):
-    """Build the partner pool used by random-pool training.
-
-    Args:
-        noisy_epsilon: Exploration rate for ``NoisyGreedyAgent``.
-
+    """Build a pool of partner TEAMS (2 agents each) for the 3-player setup.
+    
     Returns:
-        List of initialized partner agents with diverse behaviors.
+        List of lists, where each sublist contains exactly two initialized agents.
     """
     return [
-        RandomPartner(),
-        StationaryPartner(),
-        GreedyChefAgent(),
-        SpecialistAgent(role='fetcher'),
-        SpecialistAgent(role='plater'),
-        NoisyGreedyAgent(epsilon=noisy_epsilon),
+        # Team 1: The Perfect Kitchen (Optimal coordination)
+        [SpecialistAgent(role='fetcher'), SpecialistAgent(role='plater')],
+        
+        # Team 2: Standard Greedy Coordination
+        [GreedyChefAgent(), GreedyChefAgent()],
+        
+        # Team 3: One good chef, one clumsy chef (Forces ego to adapt)
+        [GreedyChefAgent(), NoisyGreedyAgent(epsilon=noisy_epsilon)],
+        
+        # Team 4: Two noisy chefs (Higher difficulty for ego)
+        [NoisyGreedyAgent(epsilon=noisy_epsilon), NoisyGreedyAgent(epsilon=noisy_epsilon)],
     ]
 
 
@@ -115,14 +110,17 @@ class OvercookedSelfPlayWrapper(gym.Env):
         self.mdp = load_layout(layout_name)
         self.base_env = OvercookedEnv.from_mdp(self.mdp, horizon=400)
         self.num_actions = len(Action.ALL_ACTIONS)
+        
         self.num_players = self.mdp.num_players
+        
         self.action_space = spaces.Discrete(self.num_actions)
         self.base_env.reset()
 
-        flat_obs_size = self.num_players * 6
+        flat_obs_size = (self.num_players * 7) + 6
+        
         self.observation_space = spaces.Box(
-            low=-1,
-            high=1,
+            low=-np.inf,
+            high=np.inf,
             shape=(flat_obs_size,),
             dtype=np.float32
         )
@@ -151,10 +149,14 @@ class OvercookedSelfPlayWrapper(gym.Env):
 
         if self.partner_pool:
             self.partner_models = [None] * self.num_players
+            
+            selected_team = random.choice(self.partner_pool)
+            team_member_idx = 0
 
             for i in range(self.num_players):
                 if i != self.ego_idx:
-                    self.partner_models[i] = random.choice(self.partner_pool)
+                    self.partner_models[i] = selected_team[team_member_idx]
+                    team_member_idx += 1
 
         self.current_obs = self.make_simple_obs(self.ego_idx)
 
@@ -227,15 +229,41 @@ class OvercookedSelfPlayWrapper(gym.Env):
         state = self.base_env.state
         features = []
 
+        def get_held_item_encoding(player):
+            if not player.has_object(): return [0.0, 0.0, 0.0]
+            if player.held_object.name == 'onion': return [1.0, 0.0, 0.0]
+            if player.held_object.name == 'dish': return [0.0, 1.0, 0.0]
+            if player.held_object.name == 'soup': return [0.0, 0.0, 1.0]
+            return [0.0, 0.0, 0.0]
+
+        ego_player = state.players[controlled_idx]
+        features.extend([
+            ego_player.position[0] / self.mdp.width,
+            ego_player.position[1] / self.mdp.height,
+            ego_player.orientation[0],
+            ego_player.orientation[1],
+        ] + get_held_item_encoding(ego_player))
+
+
         for i, player in enumerate(state.players):
-            features.extend([
-                player.position[0] / self.mdp.width,
-                player.position[1] / self.mdp.height,
-                player.orientation[0],
-                player.orientation[1],
-                1.0 if player.has_object() else 0.0,
-                1.0 if i == controlled_idx else 0.0,
-            ])
+            if i != controlled_idx:
+                features.extend([
+                    player.position[0] / self.mdp.width,
+                    player.position[1] / self.mdp.height,
+                    player.orientation[0],
+                    player.orientation[1],
+                ] + get_held_item_encoding(player))
+
+        pot_states = self.mdp.get_pot_states(state)
+        
+        features.extend([
+            float(len(pot_states.get('empty', []))),
+            float(len(pot_states.get('1_items', []))),
+            float(len(pot_states.get('2_items', []))),
+            float(len(pot_states.get('3_items', []))),
+            float(len(pot_states.get('cooking', []))),
+            float(len(pot_states.get('ready', [])) + len(pot_states.get('both_ready', [])))
+        ])
 
         return np.array(features, dtype=np.float32)
     
