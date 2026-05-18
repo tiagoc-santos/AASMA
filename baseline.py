@@ -16,7 +16,8 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
+from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.monitor import Monitor
 from partner_agents import RandomPartner, StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent
 from evaluation import evaluate, evaluation_result, save_agent_gameplay
@@ -42,34 +43,24 @@ def build_training_partner_pool(noisy_epsilon=0.25):
     ]
 
 
-def make_eval_partner(partner_type, trained_model, noisy_epsilon=0.25):
-    """Create the evaluation partner.
-
-    Args:
-        partner_type: Partner key from supported choices.
-        trained_model: PPO model to use when ``partner_type`` is ``'ppo'``.
-        noisy_epsilon: Exploration rate for ``'noisy_greedy'``.
+def make_eval_team(partner_type, trained_model, noisy_epsilon=0.25):
+    """Create the evaluation partner team.
 
     Returns:
-        Partner policy object exposing ``predict``.
-
-    Raises:
-        ValueError: If ``partner_type`` is unknown.
+        A list containing exactly two partner agents.
     """
     if partner_type == 'ppo':
-        return trained_model
+        return [trained_model, trained_model]
     if partner_type == 'random':
-        return RandomPartner()
+        return [RandomPartner(), RandomPartner()]
     if partner_type == 'stationary':
-        return StationaryPartner()
+        return [StationaryPartner(), StationaryPartner()]
     if partner_type == 'greedy':
-        return GreedyChefAgent()
-    if partner_type == 'fetcher':
-        return SpecialistAgent(role='fetcher')
-    if partner_type == 'plater':
-        return SpecialistAgent(role='plater')
+        return [GreedyChefAgent(), GreedyChefAgent()]
+    if partner_type == 'specialists':
+        return [SpecialistAgent(role='fetcher'), SpecialistAgent(role='plater')]
     if partner_type == 'noisy_greedy':
-        return NoisyGreedyAgent(epsilon=noisy_epsilon)
+        return [NoisyGreedyAgent(epsilon=noisy_epsilon), NoisyGreedyAgent(epsilon=noisy_epsilon)]
     raise ValueError(f"Unsupported partner_type: {partner_type}")
 
 def load_layout(layout_name):
@@ -116,10 +107,11 @@ class OvercookedSelfPlayWrapper(gym.Env):
         self.action_space = spaces.Discrete(self.num_actions)
         self.base_env.reset()
 
-        flat_obs_size = (self.num_players * 7) + 6
+        obs_shape = self.mdp.get_lossless_state_encoding_shape()
+        flat_obs_size = int(np.prod(obs_shape))
         
         self.observation_space = spaces.Box(
-            low=-np.inf,
+            low=0.0,
             high=np.inf,
             shape=(flat_obs_size,),
             dtype=np.float32
@@ -225,76 +217,41 @@ class OvercookedSelfPlayWrapper(gym.Env):
     def make_simple_obs(self, controlled_idx=None):
         if controlled_idx is None:
             controlled_idx = self.ego_idx
-
-        state = self.base_env.state
-        features = []
-
-        def get_held_item_encoding(player):
-            if not player.has_object(): return [0.0, 0.0, 0.0]
-            if player.held_object.name == 'onion': return [1.0, 0.0, 0.0]
-            if player.held_object.name == 'dish': return [0.0, 1.0, 0.0]
-            if player.held_object.name == 'soup': return [0.0, 0.0, 1.0]
-            return [0.0, 0.0, 0.0]
-
-        ego_player = state.players[controlled_idx]
-        features.extend([
-            ego_player.position[0] / self.mdp.width,
-            ego_player.position[1] / self.mdp.height,
-            ego_player.orientation[0],
-            ego_player.orientation[1],
-        ] + get_held_item_encoding(ego_player))
-
-
-        for i, player in enumerate(state.players):
-            if i != controlled_idx:
-                features.extend([
-                    player.position[0] / self.mdp.width,
-                    player.position[1] / self.mdp.height,
-                    player.orientation[0],
-                    player.orientation[1],
-                ] + get_held_item_encoding(player))
-
-        pot_states = self.mdp.get_pot_states(state)
+            
+        obs_tuple = self.mdp.lossless_state_encoding(
+            self.base_env.state, 
+            horizon=self.base_env.horizon
+        )
+        player_grid = obs_tuple[controlled_idx]
         
-        features.extend([
-            float(len(pot_states.get('empty', []))),
-            float(len(pot_states.get('1_items', []))),
-            float(len(pot_states.get('2_items', []))),
-            float(len(pot_states.get('3_items', []))),
-            float(len(pot_states.get('cooking', []))),
-            float(len(pot_states.get('ready', [])) + len(pot_states.get('both_ready', [])))
-        ])
-
-        return np.array(features, dtype=np.float32)
+        return player_grid.flatten().astype(np.float32)
+ 
+def make_env(layout_name, rank, seed=0):
+    """Utility function for multiprocessed env."""
+    def _init():
+        env = OvercookedSelfPlayWrapper(layout_name=layout_name)
+        env.reset(seed=seed + rank)
+        return Monitor(env)
+    set_random_seed(seed)
+    return _init 
     
-def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline",
+def train_baseline(total_timesteps=2000000, zip_filename="overcooked_baseline",
                    train_partner_mode="curriculum", train_noisy_epsilon=0.25,
                    layout_name="cramped_room"):
-    """Train a PPO baseline with curriculum or random-pool partner training.
-
-    Args:
-        total_timesteps: Total training timesteps across all iterations.
-        zip_filename: Output filename used when saving the PPO model.
-        train_partner_mode: ``'curriculum'`` or ``'random_pool'``.
-        train_noisy_epsilon: Epsilon for noisy partner in random pool.
-        layout_name: Overcooked layout to train on.
-
-    Returns:
-        Tuple ``(trained_model, eval_env)`` ready for evaluation.
-    """
-    raw_env = DummyVecEnv([lambda: Monitor(OvercookedSelfPlayWrapper(layout_name=layout_name))])
+    
+    num_cpu = 8
+    raw_env = SubprocVecEnv([make_env(layout_name, i) for i in range(num_cpu)])
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
-
     
     model = PPO(
         "MlpPolicy", 
         env, 
         learning_rate=3e-4,
-        n_steps=2048,
+        n_steps=2048 // num_cpu,
         batch_size=64,
         ent_coef=0.01, 
         verbose=1,
-        device="cpu"
+        device="cpu" 
     )
     
     iterations = 10
@@ -302,23 +259,23 @@ def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"
     training_partner_pool = build_training_partner_pool(noisy_epsilon=train_noisy_epsilon)
 
     if train_partner_mode == "random_pool":
-        env.venv.envs[0].env.set_partner_pool(training_partner_pool)
+        env.env_method("set_partner_pool", training_partner_pool)
     
     for i in range(iterations):
         print(f"Iteration {i+1}/{iterations}")
 
-        wrapper = env.venv.envs[0].env
-
         if train_partner_mode == "random_pool":
             pass
         else:
+            num_players = env.get_attr("num_players")[0]
+            
             if i == 0:
-                wrapper.set_partner_models([RandomPartner()] * wrapper.num_players)
-                wrapper.set_deterministic_partner(False)
+                env.env_method("set_partner_models", [RandomPartner()] * num_players)
+                env.env_method("set_deterministic_partner", False)
             else:
                 model.save("temp_partner_model")
                 partner_model = PPO.load("temp_partner_model")
-                wrapper.set_partner_models([partner_model] * wrapper.num_players)
+                env.env_method("set_partner_models", [partner_model] * num_players)
 
         model.learn(total_timesteps=timesteps_per_iteration, reset_num_timesteps=False)
         
@@ -327,6 +284,7 @@ def train_baseline(total_timesteps = 2000000, zip_filename="overcooked_baseline"
     eval_env = OvercookedSelfPlayWrapper(layout_name=layout_name)
     loaded_partner = PPO.load(zip_filename)
     eval_env.set_partner_models([loaded_partner] * eval_env.num_players)
+    
     return model, eval_env
 
     
@@ -348,7 +306,7 @@ if __name__ == "__main__":
     parser.add_argument('--train_noisy_epsilon', type=float, default=0.25,
                         help='Epsilon used for NoisyGreedyAgent in training partner pool')
     parser.add_argument('--eval_partner', type=str, default='ppo',
-                        choices=['ppo', 'random', 'stationary', 'greedy', 'fetcher', 'plater', 'noisy_greedy'],
+                        choices=['ppo', 'random', 'stationary', 'greedy', 'specialists', 'noisy_greedy'],
                         help='Partner to use during evaluation and gameplay rendering')
     parser.add_argument('--eval_partner_epsilon', type=float, default=0.25,
                         help='Epsilon for noisy_greedy evaluation partner')
@@ -376,13 +334,13 @@ if __name__ == "__main__":
         trained_model = PPO.load(args.model)
         env = OvercookedSelfPlayWrapper(layout_name=args.layout_name) 
 
-    eval_partner = make_eval_partner(
+    eval_team = make_eval_team(
         args.eval_partner,
         trained_model,
         noisy_epsilon=args.eval_partner_epsilon
     )
 
-    env.set_partner_models([eval_partner] * env.num_players)
+    env.set_partner_pool([eval_team])
 
     summary = evaluate(
         trained_model,
