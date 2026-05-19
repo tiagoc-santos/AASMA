@@ -49,7 +49,7 @@ def run_single_episode(model, gym_env, episode_seed):
     prev_state = base_env.state
 
     while not done:
-        ego_action_idx, _ = model.predict(obs, deterministic=False)
+        ego_action_idx, _ = model.predict(obs, deterministic=True)
         obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
         done = terminated or truncated
         step_count += 1
@@ -235,7 +235,7 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5
     frames.append(frame_actual)
 
     while not done:
-        ego_action_idx, _ = model.predict(obs, deterministic=False)
+        ego_action_idx, _ = model.predict(obs, deterministic=True)
         
         obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
         done = terminated or truncated

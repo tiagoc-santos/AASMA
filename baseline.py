@@ -21,6 +21,10 @@ from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.monitor import Monitor
 from partner_agents import RandomPartner, StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent
 from evaluation import evaluate, evaluation_result, save_agent_gameplay
+from collections import Counter
+import torch as th
+import torch.nn as nn
+from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
 def build_training_partner_pool(noisy_epsilon=0.25):
     """Build a pool of partner TEAMS (2 agents each) for the 3-player setup.
@@ -88,6 +92,32 @@ def load_layout(layout_name):
 
     return OvercookedGridworld.from_layout_name(layout_name)
 
+class SmallGridCNN(BaseFeaturesExtractor):
+    def __init__(self, observation_space: spaces.Box, features_dim=128):
+        super().__init__(observation_space, features_dim)
+
+        n_input_channels = observation_space.shape[0]
+
+        self.cnn = nn.Sequential(
+            nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.Flatten(),
+        )
+
+        with th.no_grad():
+            sample = th.zeros(1, *observation_space.shape)
+            n_flatten = self.cnn(sample).shape[1]
+
+        self.linear = nn.Sequential(
+            nn.Linear(n_flatten, features_dim),
+            nn.ReLU(),
+        )
+
+    def forward(self, observations):
+        return self.linear(self.cnn(observations))
+
 class OvercookedSelfPlayWrapper(gym.Env):
     """Gym wrapper exposing one Overcooked player as the learning ego agent.
 
@@ -107,13 +137,12 @@ class OvercookedSelfPlayWrapper(gym.Env):
         self.action_space = spaces.Discrete(self.num_actions)
         self.base_env.reset()
 
-        obs_shape = self.mdp.get_lossless_state_encoding_shape()
-        flat_obs_size = int(np.prod(obs_shape))
-        
+        self.lossless_channels = 16 + self.num_players * 5
+
         self.observation_space = spaces.Box(
             low=0.0,
             high=np.inf,
-            shape=(flat_obs_size,),
+            shape=(self.lossless_channels, self.mdp.width, self.mdp.height),
             dtype=np.float32
         )
         
@@ -204,7 +233,15 @@ class OvercookedSelfPlayWrapper(gym.Env):
             [0.0] * self.num_players
         )
 
-        total_reward = sparse_reward + sum(step_dense_rewards)
+        step_sparse_rewards = info.get(
+            "sparse_r_by_agent",
+            [0.0] * self.num_players
+        )
+
+        ego_sparse_reward = step_sparse_rewards[self.ego_idx]
+        ego_dense_reward = step_dense_rewards[self.ego_idx]
+
+        total_reward = ego_sparse_reward + ego_dense_reward
 
         info["joint_action"] = joint_action
         info["ego_idx"] = self.ego_idx
@@ -217,14 +254,177 @@ class OvercookedSelfPlayWrapper(gym.Env):
     def make_simple_obs(self, controlled_idx=None):
         if controlled_idx is None:
             controlled_idx = self.ego_idx
-            
-        obs_tuple = self.mdp.lossless_state_encoding(
-            self.base_env.state, 
+
+        player_grid = self.lossless_state_encoding_3p(
+            self.base_env.state,
+            controlled_idx,
             horizon=self.base_env.horizon
         )
-        player_grid = obs_tuple[controlled_idx]
-        
-        return player_grid.flatten().astype(np.float32)
+
+        return np.transpose(player_grid, (2, 0, 1)).astype(np.float32)
+    
+    def lossless_state_encoding_3p(self, overcooked_state, primary_agent_idx, horizon=400):
+        """Lossless-style grid encoding that supports 2+ players."""
+
+        base_map_features = [
+            "pot_loc",
+            "counter_loc",
+            "onion_disp_loc",
+            "tomato_disp_loc",
+            "dish_disp_loc",
+            "serve_loc",
+        ]
+
+        variable_map_features = [
+            "onions_in_pot",
+            "tomatoes_in_pot",
+            "onions_in_soup",
+            "tomatoes_in_soup",
+            "soup_cook_time_remaining",
+            "soup_done",
+            "dishes",
+            "onions",
+            "tomatoes",
+        ]
+
+        urgency_features = ["urgency"]
+
+        ordered_player_indices = [primary_agent_idx] + [
+            i for i in range(self.num_players)
+            if i != primary_agent_idx
+        ]
+
+        ordered_player_features = [
+            f"player_{i}_loc"
+            for i in ordered_player_indices
+        ] + [
+            f"player_{i}_orientation_{Direction.DIRECTION_TO_INDEX[d]}"
+            for i in ordered_player_indices
+            for d in Direction.ALL_DIRECTIONS
+        ]
+
+        layers = (
+            ordered_player_features
+            + base_map_features
+            + variable_map_features
+            + urgency_features
+        )
+
+        state_mask_dict = {
+            layer_name: np.zeros(self.mdp.shape, dtype=np.float32)
+            for layer_name in layers
+        }
+
+        def make_layer(position, value):
+            layer = np.zeros(self.mdp.shape, dtype=np.float32)
+            layer[position] = value
+            return layer
+
+        # Urgência perto do fim do episódio
+        if horizon - overcooked_state.timestep < 40:
+            state_mask_dict["urgency"] = np.ones(self.mdp.shape, dtype=np.float32)
+
+        # Layers fixas do mapa
+        for loc in self.mdp.get_counter_locations():
+            state_mask_dict["counter_loc"][loc] = 1.0
+
+        for loc in self.mdp.get_pot_locations():
+            state_mask_dict["pot_loc"][loc] = 1.0
+
+        for loc in self.mdp.get_onion_dispenser_locations():
+            state_mask_dict["onion_disp_loc"][loc] = 1.0
+
+        for loc in self.mdp.get_tomato_dispenser_locations():
+            state_mask_dict["tomato_disp_loc"][loc] = 1.0
+
+        for loc in self.mdp.get_dish_dispenser_locations():
+            state_mask_dict["dish_disp_loc"][loc] = 1.0
+
+        for loc in self.mdp.get_serving_locations():
+            state_mask_dict["serve_loc"][loc] = 1.0
+
+        # Layers dos jogadores
+        for i, player in enumerate(overcooked_state.players):
+            orientation_idx = Direction.DIRECTION_TO_INDEX[player.orientation]
+
+            state_mask_dict[f"player_{i}_loc"] = make_layer(
+                player.position,
+                1.0
+            )
+
+            state_mask_dict[f"player_{i}_orientation_{orientation_idx}"] = make_layer(
+                player.position,
+                1.0
+            )
+
+        # Layers de objetos e panelas
+        for obj in overcooked_state.all_objects_list:
+            if obj.name == "soup":
+                ingredients_count = Counter(obj.ingredients)
+
+                num_onions = ingredients_count["onion"]
+                num_tomatoes = ingredients_count["tomato"]
+
+                if obj.position in self.mdp.get_pot_locations():
+                    if obj.is_idle:
+                        state_mask_dict["onions_in_pot"] += make_layer(
+                            obj.position,
+                            num_onions
+                        )
+                        state_mask_dict["tomatoes_in_pot"] += make_layer(
+                            obj.position,
+                            num_tomatoes
+                        )
+                    else:
+                        state_mask_dict["onions_in_soup"] += make_layer(
+                            obj.position,
+                            num_onions
+                        )
+                        state_mask_dict["tomatoes_in_soup"] += make_layer(
+                            obj.position,
+                            num_tomatoes
+                        )
+                        state_mask_dict["soup_cook_time_remaining"] += make_layer(
+                            obj.position,
+                            obj.cook_time - obj._cooking_tick
+                        )
+
+                        if obj.is_ready:
+                            state_mask_dict["soup_done"] += make_layer(
+                                obj.position,
+                                1.0
+                            )
+                else:
+                    state_mask_dict["onions_in_soup"] += make_layer(
+                        obj.position,
+                        num_onions
+                    )
+                    state_mask_dict["tomatoes_in_soup"] += make_layer(
+                        obj.position,
+                        num_tomatoes
+                    )
+                    state_mask_dict["soup_done"] += make_layer(
+                        obj.position,
+                        1.0
+                    )
+
+            elif obj.name == "dish":
+                state_mask_dict["dishes"] += make_layer(obj.position, 1.0)
+
+            elif obj.name == "onion":
+                state_mask_dict["onions"] += make_layer(obj.position, 1.0)
+
+            elif obj.name == "tomato":
+                state_mask_dict["tomatoes"] += make_layer(obj.position, 1.0)
+
+        state_mask_stack = np.array(
+            [state_mask_dict[layer_name] for layer_name in layers],
+            dtype=np.float32
+        )
+
+        state_mask_stack = np.transpose(state_mask_stack, (1, 2, 0))
+
+        return state_mask_stack
  
 def make_env(layout_name, rank, seed=0):
     """Utility function for multiprocessed env."""
@@ -244,14 +444,19 @@ def train_baseline(total_timesteps=2000000, zip_filename="overcooked_baseline",
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
     
     model = PPO(
-        "MlpPolicy", 
+        "CnnPolicy", 
         env, 
         learning_rate=3e-4,
         n_steps=2048 // num_cpu,
         batch_size=64,
         ent_coef=0.01, 
         verbose=1,
-        device="cpu" 
+        device="cpu",
+        policy_kwargs=dict(
+            features_extractor_class=SmallGridCNN,
+            features_extractor_kwargs=dict(features_dim=128),
+            normalize_images=False,
+        )
     )
     
     iterations = 10
