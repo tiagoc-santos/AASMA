@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pygame
 import imageio
+from pathlib import Path
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 
@@ -210,6 +211,15 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
     
+    output_dir = "./gameplay_gifs"    
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    path_obj = Path(output_file)
+    if path_obj.suffix == "":
+        output_file = path_obj.with_suffix(".gif").name
+    
+    output_path = os.path.join(output_dir, output_file)
+    
     visualizer = StateVisualizer()
 
     extra_colors = ["red", "yellow", "purple", "orange", "cyan", "magenta", "brown"]
@@ -251,6 +261,6 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5
 
     if output_file.endswith('.gif'):
         duration_ms = 1000 / fps
-        imageio.mimsave(output_file, frames, format='GIF', duration=duration_ms, loop=0)
+        imageio.mimsave(output_path, frames, format='GIF', duration=duration_ms, loop=0)
     else:
-        imageio.mimsave(output_file, frames, fps=fps, macro_block_size=None)
+        imageio.mimsave(output_path, frames, fps=fps, macro_block_size=None)

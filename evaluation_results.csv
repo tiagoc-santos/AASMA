@@ -1,7 +1,11 @@
 timestamp,layout_name,eval_partner,num_episodes,deterministic_partner,model_file,train_partner_mode,avg_total_score,std_total_score,avg_time_to_first,avg_time_between,avg_stood_still,avg_bumps,avg_misplaced,avg_deliveries,success_rate
 2026-05-10T12:20:54,cramped_room,fetcher,20,True,overcooked_baseline.zip,loaded_model,202.0,10.770329614269007,46.3,36.85222222222222,257.3,129.8,0.65,10.1,1.0
 2026-05-10T11:58:34,cramped_room,ppo,20,True,overcooked_baseline.zip,loaded_model,184.0,14.966629547095765,49.1,40.165376984126986,94.3,216.35,2.75,9.2,1.0
+2026-05-19T19:22:54,three_chefs,noisy_greedy,20,True,overcooked_baseline.zip,loaded_model,158.0,27.49545416973504,58.05,47.363214285714285,414.35,128.1,0.7,7.9,1.0
+2026-05-19T20:17:08,three_chefs,greedy,20,True,./models/mlp_stationary.zip,loaded_model,140.0,91.6515138991168,153.5,25.855555555555554,307.7,380.0,0.0,7.0,0.7
+2026-05-19T20:19:25,three_chefs,specialists,20,True,./models/mlp_stationary.zip,loaded_model,134.0,54.4426303552648,57.0,35.74166666666666,314.3,388.6,0.0,6.7,1.0
 2026-05-10T11:57:55,cramped_room,greedy,20,True,overcooked_baseline.zip,loaded_model,127.0,27.03701166919155,54.7,58.06908730158731,289.65,150.5,3.75,6.35,1.0
-2026-05-16T12:15:30,three_chefs,greedy,20,True,overcooked_baseline.zip,loaded_model,58.0,67.79380502671317,155.6,17.2,176.75,774.15,0.15,2.9,0.7
 2026-05-10T12:18:21,cramped_room,stationary,20,True,overcooked_baseline.zip,loaded_model,8.0,13.2664991614216,349.2,10.0,400.0,111.1,3.9,0.4,0.3
-2026-05-16T12:04:18,three_chefs,ppo,20,True,overcooked_baseline,random_pool,0.0,0.0,400.0,0.0,249.85,625.45,0.5,0.0,0.0
+2026-05-19T19:23:40,three_chefs,ppo,20,True,overcooked_baseline.zip,loaded_model,0.0,0.0,400.0,0.0,1054.0,6.0,0.0,0.0,0.0
+2026-05-19T20:12:25,three_chefs,stationary,20,True,mlp_stationary,random_pool,0.0,0.0,400.0,0.0,815.6,131.7,0.0,0.0,0.0
+2026-05-19T20:15:51,three_chefs,random,20,True,./models/mlp_stationary.zip,loaded_model,0.0,0.0,400.0,0.0,204.45,213.6,5.15,0.0,0.0
