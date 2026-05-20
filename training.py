@@ -276,7 +276,11 @@ class OvercookedSelfPlayWrapper(gym.Env):
 
         ego_obs = self.current_obs
 
-        return ego_obs, total_reward, done, False, info
+        timestep = self.base_env.state.timestep
+        terminated = bool(done) and timestep < self.base_env.horizon
+        truncated = bool(done) and timestep >= self.base_env.horizon
+
+        return ego_obs, total_reward, terminated, truncated, info
     
     def make_simple_obs(self, controlled_idx=None):
         if controlled_idx is None:
@@ -468,7 +472,7 @@ def make_env(layout_name, rank, architecture, seed=0):
     set_random_seed(seed)
     return _init 
     
-def train_baseline(total_timesteps=2000000, zip_filename="overcooked_baseline",
+def train_baseline(total_timesteps=2000000,
                    train_partner_mode="curriculum", train_noisy_epsilon=0.25,
                    layout_name="cramped_room", num_cpu=4, architecture='mlp'):
     
@@ -495,7 +499,7 @@ def train_baseline(total_timesteps=2000000, zip_filename="overcooked_baseline",
             batch_size=64,
             ent_coef=0.01, 
             verbose=1,
-            device="cpu",
+            device="auto",
             policy_kwargs=dict(
                 features_extractor_class=SmallGridCNN,
                 features_extractor_kwargs=dict(features_dim=128),
@@ -530,14 +534,15 @@ def train_baseline(total_timesteps=2000000, zip_filename="overcooked_baseline",
     
     output_dir = "./models/"  
     Path(output_dir).mkdir(parents=True, exist_ok=True)
-    output_path = os.path.join(output_dir, zip_filename)
+    output_filename = f"{architecture}_{train_partner_mode}_{total_timesteps}.zip"
+    output_path = os.path.join(output_dir, output_filename)
     model.save(output_path)
     
     eval_env = OvercookedSelfPlayWrapper(layout_name=layout_name, architecture=architecture)
     loaded_partner = PPO.load(output_path)
     eval_env.set_partner_models([loaded_partner] * eval_env.num_players)
     
-    return model, eval_env
+    return model, eval_env, output_filename
 
     
 if __name__ == "__main__":
@@ -548,10 +553,6 @@ if __name__ == "__main__":
                         help='The filename of an already trained model')
     parser.add_argument('--layout_name', type=str, default='cramped_room',
                         help='Overcooked layout/room to train/evaluate on')
-    parser.add_argument('--gif_filename', type=str, default="aasma_ego_agent.gif", 
-                        help='The filename of the gif output')
-    parser.add_argument('--zip_filename', type=str, default="overcooked_baseline", 
-                        help='The filename of the model')
     parser.add_argument('--train_partner_mode', type=str, default='curriculum',
                         choices=['curriculum', 'random_pool'],
                         help='Training partner schedule: curriculum (default) or random_pool')
@@ -580,10 +581,11 @@ if __name__ == "__main__":
     seed = 42
     np.random.seed(seed)
 
+    model_stem_parts = None
+
     if args.model is None:
-        trained_model, env = train_baseline(
+        trained_model, env, model_filename = train_baseline(
             args.timesteps,
-            args.zip_filename,
             train_partner_mode=args.train_partner_mode,
             train_noisy_epsilon=args.train_noisy_epsilon,
             layout_name=args.layout_name,
@@ -591,8 +593,12 @@ if __name__ == "__main__":
             architecture=args.architecture
         )
     else:
+        model_stem_parts = Path(args.model).stem.split("_")
+        if len(model_stem_parts) >= 3:
+            args.architecture = model_stem_parts[0]
         trained_model = PPO.load(args.model)
-        env = OvercookedSelfPlayWrapper(layout_name=args.layout_name) 
+        env = OvercookedSelfPlayWrapper(layout_name=args.layout_name, architecture=args.architecture) 
+        model_filename = Path(args.model).name
 
     eval_team = make_eval_team(
         args.eval_partner,
@@ -609,16 +615,27 @@ if __name__ == "__main__":
         deterministic_partner=deterministic_partner,
     )
 
+    if args.model is None:
+        train_mode_label = args.train_partner_mode
+    else:
+        if model_stem_parts is None:
+            model_stem_parts = Path(args.model).stem.split("_")
+        if len(model_stem_parts) >= 3:
+            train_mode_label = "_".join(model_stem_parts[1:-1])
+        else:
+            train_mode_label = "loaded_model"
+    gif_filename = f"{args.architecture}_{train_mode_label}_{args.eval_partner}.gif"
+
     result_row = {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "layout_name": args.layout_name,
         "eval_partner": args.eval_partner,
         "num_episodes": args.eval_episodes,
         "deterministic_partner": deterministic_partner,
-        "model_file": args.model if args.model is not None else args.zip_filename,
-        "train_partner_mode": args.train_partner_mode if args.model is None else "loaded_model",
+        "architecture": args.architecture,
+        "train_partner_mode": train_mode_label,
         **summary,
     }
     evaluation_result(args.results_csv, result_row)
 
-    save_agent_gameplay(trained_model, env, output_file=args.gif_filename, deterministic_partner=deterministic_partner)
+    save_agent_gameplay(trained_model, env, output_file=gif_filename, deterministic_partner=deterministic_partner)

@@ -1,5 +1,6 @@
 import os
 import csv
+import copy
 import numpy as np
 import matplotlib.pyplot as plt
 import pygame
@@ -31,7 +32,7 @@ def check_behavioral_events(agent_action, prev_player, curr_player, mdp):
 def run_single_episode(model, gym_env, episode_seed):
     """Run one evaluation episode and collect task/behavior metrics."""
     np.random.seed(episode_seed)
-    obs, _ = gym_env.reset()
+    obs, _ = gym_env.reset(seed=episode_seed)
     base_env = gym_env.base_env
     mdp = base_env.mdp
     
@@ -47,7 +48,7 @@ def run_single_episode(model, gym_env, episode_seed):
     }
     heatmap_updates = []
     
-    prev_state = base_env.state
+    prev_state = copy.deepcopy(base_env.state)
 
     while not done:
         ego_action_idx, _ = model.predict(obs, deterministic=True)
@@ -83,7 +84,7 @@ def run_single_episode(model, gym_env, episode_seed):
             ep_metrics['bump_count'] += bumped
             ep_metrics['misplaced_count'] += misplaced
 
-        prev_state = current_state
+        prev_state = copy.deepcopy(current_state)
         
     return ep_metrics, step_count, heatmap_updates
 
@@ -153,7 +154,7 @@ def evaluation_result(csv_file, result_row):
     key_fields = ("layout_name", "eval_partner")
     fieldnames = [
         "timestamp", "layout_name", "eval_partner", "num_episodes",
-        "deterministic_partner", "model_file", "train_partner_mode",
+        "deterministic_partner", "architecture", "train_partner_mode",
         "avg_total_score", "std_total_score", "avg_time_to_first",
         "avg_time_between", "avg_stood_still", "avg_bumps",
         "avg_misplaced", "avg_deliveries", "success_rate",
