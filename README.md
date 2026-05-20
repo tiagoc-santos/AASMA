@@ -12,6 +12,14 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+Copy the updated library files into the virtual environment (this is needed since the original overcooked-ai library does not offer support for more than 2 player):
+
+```bash
+PYTHON=python3
+VENV_SITE=$($PYTHON -c "import site; print(site.getsitepackages()[0])")
+rsync -a overcooked_ai_py_new/ "$VENV_SITE/overcooked_ai_py/" || cp -R overcooked_ai_py_new/. "$VENV_SITE/overcooked_ai_py/"
+```
+
 Run with defaults (trains a model, evaluates it, saves results and a GIF):
 
 ```bash
@@ -93,4 +101,5 @@ All flags are optional; defaults are shown below.
 
 - Trained models: `models/<architecture>_<train_partner_mode>_<timesteps>.zip`
 - Gameplay GIFs: `gameplay_gifs/<architecture>_<train_partner_mode>_<eval_partner>.gif`
+- Heatmaps: `heatmaps/<architecture>_<train_partner_mode>_<eval_partner>.pdf`
 - Evaluation results: `evaluation_results.csv`
