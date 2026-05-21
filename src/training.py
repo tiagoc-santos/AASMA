@@ -27,60 +27,36 @@ import torch as th
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-def build_training_partner_pool(noisy_epsilon=0.25):
-    """Build a pool of partner TEAMS (2 agents each) for the 3-player setup.
-    
-    Returns:
-        List of lists, where each sublist contains exactly two initialized agents.
-    """
+def build_training_partner_pool(num_partners, noisy_epsilon=0.25):
+    """Build a pool of partner teams dynamically scaled to the required number of partners."""
     return [
-        # Team 1: Optimal coordination
-        [SpecialistAgent(role='fetcher'), SpecialistAgent(role='plater')],
-        
-        # Team 2: Standard Greedy Coordination
-        [GreedyChefAgent(), GreedyChefAgent()],
-        
-        # Team 3: One good chef, one clumsy chef
-        [GreedyChefAgent(), NoisyGreedyAgent(epsilon=noisy_epsilon)],
-        
-        # Team 4: Two noisy chefs
-        [NoisyGreedyAgent(epsilon=noisy_epsilon), NoisyGreedyAgent(epsilon=noisy_epsilon)],
-
-        # Team 5: Stationary Team
-        [StationaryPartner(), StationaryPartner()],
-
-        # Team 6: One worker, one AFK
-        [GreedyChefAgent(), StationaryPartner()],
-
-        # Team 7: Random Team
-        [RandomPartner(), RandomPartner()],
-
-        # Team 8: One worker, one chaotic chef
-        [GreedyChefAgent(), RandomPartner()],
-        
-        # Team 9: One specialist, one random chef
-        [SpecialistAgent(role='fetcher'), RandomPartner()],
+        [SpecialistAgent(role='fetcher') for _ in range(num_partners)],
+        [SpecialistAgent(role='plater') for _ in range(num_partners)],
+        [GreedyChefAgent() for _ in range(num_partners)],
+        [GreedyChefAgent() if i % 2 == 0 else NoisyGreedyAgent(epsilon=noisy_epsilon) for i in range(num_partners)],
+        [NoisyGreedyAgent(epsilon=noisy_epsilon) for _ in range(num_partners)],
+        [StationaryPartner() for _ in range(num_partners)],
+        [GreedyChefAgent() if i % 2 == 0 else StationaryPartner() for i in range(num_partners)],
+        [RandomPartner() for _ in range(num_partners)],
+        [GreedyChefAgent() if i % 2 == 0 else RandomPartner() for i in range(num_partners)],
+        [SpecialistAgent(role='fetcher') if i % 2 == 0 else RandomPartner() for i in range(num_partners)],
     ]
 
 
-def make_eval_team(partner_type, trained_model, noisy_epsilon=0.25):
-    """Create the evaluation partner team.
-
-    Returns:
-        A list containing exactly two partner agents.
-    """
+def make_eval_team(partner_type, num_partners, trained_model, noisy_epsilon=0.25):
+    """Create the evaluation partner team scaled dynamically."""
     if partner_type == 'ppo':
-        return [trained_model, trained_model]
+        return [trained_model for _ in range(num_partners)]
     if partner_type == 'random':
-        return [RandomPartner(), RandomPartner()]
+        return [RandomPartner() for _ in range(num_partners)]
     if partner_type == 'stationary':
-        return [StationaryPartner(), StationaryPartner()]
+        return [StationaryPartner() for _ in range(num_partners)]
     if partner_type == 'greedy':
-        return [GreedyChefAgent(), GreedyChefAgent()]
+        return [GreedyChefAgent() for _ in range(num_partners)]
     if partner_type == 'specialists':
-        return [SpecialistAgent(role='fetcher'), SpecialistAgent(role='plater')]
+        return [SpecialistAgent(role='fetcher') if i % 2 == 0 else SpecialistAgent(role='plater') for i in range(num_partners)]
     if partner_type == 'noisy_greedy':
-        return [NoisyGreedyAgent(epsilon=noisy_epsilon), NoisyGreedyAgent(epsilon=noisy_epsilon)]
+        return [NoisyGreedyAgent(epsilon=noisy_epsilon) for _ in range(num_partners)]
     raise ValueError(f"Unsupported partner_type: {partner_type}")
 
 def load_layout(layout_name):
@@ -516,7 +492,8 @@ def train_baseline(total_timesteps=2000000,
     
     iterations = 10
     timesteps_per_iteration = total_timesteps // iterations
-    training_partner_pool = build_training_partner_pool(noisy_epsilon=train_noisy_epsilon)
+    num_partners = env.get_attr("num_players")[0] - 1
+    training_partner_pool = build_training_partner_pool(num_partners, noisy_epsilon=train_noisy_epsilon)
 
     if train_partner_mode == "random_pool":
         env.env_method("set_partner_pool", training_partner_pool)
@@ -610,6 +587,7 @@ if __name__ == "__main__":
 
     eval_team = make_eval_team(
         args.eval_partner,
+        env.num_players - 1,
         trained_model,
         noisy_epsilon=args.eval_partner_epsilon
     )
