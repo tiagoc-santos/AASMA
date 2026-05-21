@@ -17,7 +17,7 @@ from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
-from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize, VecFrameStack
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecNormalize
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.monitor import Monitor
 from partner_agents import RandomPartner, StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent
@@ -27,35 +27,60 @@ import torch as th
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 
-def build_training_partner_pool(num_partners, noisy_epsilon=0.25):
-    """Build a pool of partner teams dynamically scaled to the required number of partners."""
+def build_training_partner_pool(noisy_epsilon=0.25):
+    """Build a pool of partner TEAMS (2 agents each) for the 3-player setup.
+    
+    Returns:
+        List of lists, where each sublist contains exactly two initialized agents.
+    """
     return [
-        [SpecialistAgent(role='fetcher') for _ in range(num_partners)],
-        [SpecialistAgent(role='plater') for _ in range(num_partners)],
-        [GreedyChefAgent() for _ in range(num_partners)],
-        [GreedyChefAgent() if i % 2 == 0 else NoisyGreedyAgent(epsilon=noisy_epsilon) for i in range(num_partners)],
-        [NoisyGreedyAgent(epsilon=noisy_epsilon) for _ in range(num_partners)],
-        [StationaryPartner() for _ in range(num_partners)],
-        [GreedyChefAgent() if i % 2 == 0 else StationaryPartner() for i in range(num_partners)],
-        [RandomPartner() for _ in range(num_partners)],
-        [GreedyChefAgent() if i % 2 == 0 else RandomPartner() for i in range(num_partners)],
-        [SpecialistAgent(role='fetcher') if i % 2 == 0 else RandomPartner() for i in range(num_partners)],
+        # Team 1: Optimal coordination
+        [SpecialistAgent(role='fetcher'), SpecialistAgent(role='plater')],
+        
+        # Team 2: Standard Greedy Coordination
+        [GreedyChefAgent(), GreedyChefAgent()],
+        
+        # Team 3: One good chef, one clumsy chef
+        [GreedyChefAgent(), NoisyGreedyAgent(epsilon=noisy_epsilon)],
+        
+        # Team 4: Two noisy chefs
+        [NoisyGreedyAgent(epsilon=noisy_epsilon), NoisyGreedyAgent(epsilon=noisy_epsilon)],
+
+        # Team 5: Stationary Team
+        [StationaryPartner(), StationaryPartner()],
+
+        # Team 6: One worker, one AFK
+        [GreedyChefAgent(), StationaryPartner()],
+
+        # Team 7: Random Team
+        [RandomPartner(), RandomPartner()],
+
+        # Team 8: One worker, one chaotic chef
+        [GreedyChefAgent(), RandomPartner()],
+        
+        # Team 9: One specialist, one random chef
+        [SpecialistAgent(role='fetcher'), RandomPartner()],
     ]
 
-def make_eval_team(partner_type, num_partners, trained_model, noisy_epsilon=0.25):
-    """Create the evaluation partner team scaled dynamically."""
+
+def make_eval_team(partner_type, trained_model, noisy_epsilon=0.25):
+    """Create the evaluation partner team.
+
+    Returns:
+        A list containing exactly two partner agents.
+    """
     if partner_type == 'ppo':
-        return [trained_model for _ in range(num_partners)]
+        return [trained_model, trained_model]
     if partner_type == 'random':
-        return [RandomPartner() for _ in range(num_partners)]
+        return [RandomPartner(), RandomPartner()]
     if partner_type == 'stationary':
-        return [StationaryPartner() for _ in range(num_partners)]
+        return [StationaryPartner(), StationaryPartner()]
     if partner_type == 'greedy':
-        return [GreedyChefAgent() for _ in range(num_partners)]
+        return [GreedyChefAgent(), GreedyChefAgent()]
     if partner_type == 'specialists':
-        return [SpecialistAgent(role='fetcher') if i % 2 == 0 else SpecialistAgent(role='plater') for i in range(num_partners)]
+        return [SpecialistAgent(role='fetcher'), SpecialistAgent(role='plater')]
     if partner_type == 'noisy_greedy':
-        return [NoisyGreedyAgent(epsilon=noisy_epsilon) for _ in range(num_partners)]
+        return [NoisyGreedyAgent(epsilon=noisy_epsilon), NoisyGreedyAgent(epsilon=noisy_epsilon)]
     raise ValueError(f"Unsupported partner_type: {partner_type}")
 
 def load_layout(layout_name):
@@ -186,7 +211,7 @@ class OvercookedSelfPlayWrapper(gym.Env):
         return self.current_obs, {}
 
     def step(self, action):
-        ego_action_str = Action.INDEX_TO_ACTION[int(np.array(action).item())]
+        ego_action_str = Action.INDEX_TO_ACTION[int(action)]
 
         partner_indices = [
             i for i in range(self.num_players)
@@ -216,7 +241,7 @@ class OvercookedSelfPlayWrapper(gym.Env):
                     **predict_kwargs
                 )
 
-                partner_action_str = Action.INDEX_TO_ACTION[int(np.array(partner_action_idx).item())]
+                partner_action_str = Action.INDEX_TO_ACTION[int(partner_action_idx)]
             else:
                 partner_action_str = Action.STAY
 
@@ -460,7 +485,6 @@ def train_baseline(total_timesteps=2000000,
     
     raw_env = SubprocVecEnv([make_env(layout_name, i, architecture=architecture) for i in range(num_cpu)])
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
-    env = VecFrameStack(env, n_stack=4)
     
     if architecture == 'mlp':
         model = PPO(
@@ -479,7 +503,7 @@ def train_baseline(total_timesteps=2000000,
             env, 
             learning_rate=3e-4,
             n_steps=2048 // num_cpu,
-            batch_size=256,
+            batch_size=64,
             ent_coef=0.01, 
             verbose=1,
             device="auto",
@@ -492,8 +516,7 @@ def train_baseline(total_timesteps=2000000,
     
     iterations = 10
     timesteps_per_iteration = total_timesteps // iterations
-    num_partners = env.get_attr("num_players")[0] - 1
-    training_partner_pool = build_training_partner_pool(num_partners, noisy_epsilon=train_noisy_epsilon)
+    training_partner_pool = build_training_partner_pool(noisy_epsilon=train_noisy_epsilon)
 
     if train_partner_mode == "random_pool":
         env.env_method("set_partner_pool", training_partner_pool)
@@ -585,19 +608,13 @@ if __name__ == "__main__":
         env = OvercookedSelfPlayWrapper(layout_name=args.layout_name, architecture=args.architecture) 
         model_filename = Path(args.model).name
 
-    raw_eval_env = OvercookedSelfPlayWrapper(layout_name=args.layout_name, architecture=args.architecture)
-    raw_eval_env.set_deterministic_partner(deterministic_partner)
-
-    num_eval_partners = raw_eval_env.num_players - 1
     eval_team = make_eval_team(
         args.eval_partner,
-        num_eval_partners,
         trained_model,
         noisy_epsilon=args.eval_partner_epsilon
     )
-    raw_eval_env.set_partner_pool([eval_team])
-    eval_vec_env = DummyVecEnv([lambda: raw_eval_env])
-    env = VecFrameStack(eval_vec_env, n_stack=4)
+
+    env.set_partner_pool([eval_team])
 
     if args.model is None:
         train_mode_label = args.train_partner_mode

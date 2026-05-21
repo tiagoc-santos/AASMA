@@ -32,10 +32,8 @@ def check_behavioral_events(agent_action, prev_player, curr_player, mdp):
 def run_single_episode(model, gym_env, episode_seed):
     """Run one evaluation episode and collect task/behavior metrics."""
     np.random.seed(episode_seed)
-    gym_env.seed(episode_seed)
-    obs = gym_env.reset()
-    raw_wrapper = gym_env.venv.envs[0]
-    base_env = raw_wrapper.base_env
+    obs, _ = gym_env.reset(seed=episode_seed)
+    base_env = gym_env.base_env
     mdp = base_env.mdp
     
     done = False
@@ -54,10 +52,8 @@ def run_single_episode(model, gym_env, episode_seed):
 
     while not done:
         ego_action_idx, _ = model.predict(obs, deterministic=True)
-        obs, rewards, dones, infos = gym_env.step([ego_action_idx])
-        
-        done = dones[0]
-        info = infos[0] 
+        obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
+        done = terminated or truncated
         step_count += 1
         
         current_state = base_env.state
@@ -107,9 +103,8 @@ def print_evaluation_summary(agg_metrics):
 
 def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True, heatmap_output_file=None):
     """Evaluate a trained model for multiple episodes."""
-    raw_wrapper = gym_env.venv.envs[0]
-    raw_wrapper.set_deterministic_partner(deterministic_partner)
-    mdp = raw_wrapper.base_env.mdp
+    gym_env.set_deterministic_partner(deterministic_partner)
+    mdp = gym_env.base_env.mdp
     
     agg_metrics = {
         'scores': [], 'time_to_first': [], 'avg_time_between': [],
@@ -225,37 +220,39 @@ def render_heatmap(heatmap, output_file="baseline_heatmap.pdf"):
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
 
-def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5, deterministic_partner=True):
-    """Record one episode and save it strictly as a GIF."""
+def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.mp4", fps=5, deterministic_partner=True):
+    """Record one episode and save it as GIF or video."""
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
     
     output_dir = "../gameplay_gifs"    
     Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
     path_obj = Path(output_file)
-    output_file = path_obj.with_suffix(".gif").name
+    if path_obj.suffix == "":
+        output_file = path_obj.with_suffix(".gif").name
+    
     output_path = os.path.join(output_dir, output_file)
     
     visualizer = StateVisualizer()
-    raw_wrapper = gym_env.venv.envs[0]
 
     extra_colors = ["red", "yellow", "purple", "orange", "cyan", "magenta", "brown"]
 
-    while len(visualizer.player_colors) < raw_wrapper.num_players:
+    while len(visualizer.player_colors) < gym_env.num_players:
         next_color = extra_colors[
             (len(visualizer.player_colors) - 2) % len(extra_colors)
         ]
         visualizer.player_colors.append(next_color)
 
-    raw_wrapper.set_deterministic_partner(deterministic_partner)
+    gym_env.set_deterministic_partner(deterministic_partner)
     
-    obs = gym_env.reset()
+    obs, _ = gym_env.reset()
     done = False
-    initial_mdp = raw_wrapper.base_env.mdp
+    initial_mdp = gym_env.base_env.mdp
     
     frames = []
     
-    current_state = raw_wrapper.base_env.state
+    current_state = gym_env.base_env.state
     surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
     frame = pygame.surfarray.pixels3d(surface)
     frame_actual = np.transpose(frame, (1, 0, 2)).copy()
@@ -263,10 +260,11 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5
 
     while not done:
         ego_action_idx, _ = model.predict(obs, deterministic=True)
-        obs, rewards, dones, infos = gym_env.step([ego_action_idx])
-        done = dones[0]
+        
+        obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
+        done = terminated or truncated
 
-        current_state = raw_wrapper.base_env.state
+        current_state = gym_env.base_env.state
         surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
         
         frame = pygame.surfarray.pixels3d(surface)
@@ -275,6 +273,8 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5
 
     pygame.quit()
 
-    duration_ms = 1000 / fps
-    imageio.mimsave(output_path, frames, format='GIF', duration=duration_ms, loop=0)
-    print(f"Gameplay GIF saved to: {output_path}")
+    if output_file.endswith('.gif'):
+        duration_ms = 1000 / fps
+        imageio.mimsave(output_path, frames, format='GIF', duration=duration_ms, loop=0)
+    else:
+        imageio.mimsave(output_path, frames, fps=fps, macro_block_size=None)
