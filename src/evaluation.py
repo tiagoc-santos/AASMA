@@ -221,10 +221,9 @@ def render_heatmap(heatmap, output_file="baseline_heatmap.pdf"):
     plt.close()
 
 def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5, deterministic_partner=True):
-    """Record one episode and save it strictly as a GIF."""
+    """Record one episode and save it strictly as a GIF (No Frame Stacking)."""
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
-    
     output_dir = "../gameplay_gifs"    
     Path(output_dir).mkdir(parents=True, exist_ok=True)
     path_obj = Path(output_file)
@@ -232,25 +231,23 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5
     output_path = os.path.join(output_dir, output_file)
     
     visualizer = StateVisualizer()
-    raw_wrapper = gym_env.venv.envs[0]
-
     extra_colors = ["red", "yellow", "purple", "orange", "cyan", "magenta", "brown"]
 
-    while len(visualizer.player_colors) < raw_wrapper.num_players:
+    while len(visualizer.player_colors) < gym_env.num_players:
         next_color = extra_colors[
             (len(visualizer.player_colors) - 2) % len(extra_colors)
         ]
         visualizer.player_colors.append(next_color)
 
-    raw_wrapper.set_deterministic_partner(deterministic_partner)
+    gym_env.set_deterministic_partner(deterministic_partner)
     
-    obs = gym_env.reset()
+    obs, _ = gym_env.reset()
     done = False
-    initial_mdp = raw_wrapper.base_env.mdp
+    initial_mdp = gym_env.base_env.mdp
     
     frames = []
     
-    current_state = raw_wrapper.base_env.state
+    current_state = gym_env.base_env.state
     surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
     frame = pygame.surfarray.pixels3d(surface)
     frame_actual = np.transpose(frame, (1, 0, 2)).copy()
@@ -258,10 +255,9 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5
 
     while not done:
         ego_action_idx, _ = model.predict(obs, deterministic=True)
-        obs, rewards, dones, infos = gym_env.step([ego_action_idx])
-        done = dones[0]
-
-        current_state = raw_wrapper.base_env.state
+        obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
+        done = terminated or truncated
+        current_state = gym_env.base_env.state
         surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
         
         frame = pygame.surfarray.pixels3d(surface)

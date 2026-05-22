@@ -536,7 +536,7 @@ if __name__ == "__main__":
                         help='The number of time steps per iteration')
     parser.add_argument('--model', type=str, default=None, 
                         help='The filename of an already trained model')
-    parser.add_argument('--layout_name', type=str, default='cramped_room',
+    parser.add_argument('--layout_name', type=str, default='three_chefs',
                         help='Overcooked layout/room to train/evaluate on')
     parser.add_argument('--train_partner_mode', type=str, default='curriculum',
                         choices=['curriculum', 'random_pool'],
