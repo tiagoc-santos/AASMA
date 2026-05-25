@@ -1,6 +1,6 @@
 # AASMA
 
-Train and evaluate an ego agent for ad-hoc teamwork in Overcooked. The main entry point is `training.py`, which can both train a new model and evaluate/render gameplay.
+Train and evaluate an ego agent for ad-hoc teamwork in Overcooked. The main entry point is `src/training.py`, which can both train a new model and evaluate/render gameplay.
 
 ## Quick start
 
@@ -23,14 +23,16 @@ rsync -a overcooked_ai_py_new/ "$VENV_SITE/overcooked_ai_py/" || cp -R overcooke
 Run with defaults (trains a model, evaluates it, saves results and a GIF):
 
 ```bash
-python training.py
+python src/training.py
 ```
 
-## What happens when you run training.py
+## What happens when you run src/training.py
 
-- If `--model` is not provided, a new model is trained and saved to `models/<architecture>_<train_partner_mode>_<timesteps>.zip`.
+- If `--model` is not provided, a new model is trained and saved to `models/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>.zip`.
+- VecNormalize statistics are saved alongside the model as `models/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>_vecnormalize.pkl`.
 - Evaluation always runs after training/loading.
-- A gameplay GIF is saved to `gameplay_gifs/<architecture>_<train_partner_mode>_<eval_partner>.gif`.
+- A gameplay GIF is saved to `gameplay_gifs/<architecture>_<train_partner_mode>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.gif`.
+- A heatmap PDF is saved to `heatmaps/<architecture>_<train_partner_mode>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.pdf`.
 - Evaluation summaries are saved (or updated) in `evaluation_results.csv`.
 
 ## Common usage patterns
@@ -58,13 +60,25 @@ python training.py --eval_partner noisy_greedy --eval_partner_epsilon 0.4
 Load an existing model and evaluate it:
 
 ```bash
-python training.py --model models/mlp_curriculum_2000000.zip --eval_partner greedy
+python src/training.py --model models/cnn_curriculum_2000000_seed42.zip --eval_partner greedy
 ```
 
 Use a custom layout (local file or built-in layout name):
 
 ```bash
-python training.py --layout_name three_chefs
+python src/training.py --layout_name three_chefs
+```
+
+Run the three-stage ad-hoc curriculum:
+
+```bash
+python src/training.py --train_partner_mode adhoc_curriculum
+```
+
+Evaluate with the fixed external suite:
+
+```bash
+python src/training.py --eval_suite common
 ```
 
 ## Flags
@@ -76,30 +90,37 @@ All flags are optional; defaults are shown below.
 - `--model` (str, default: None)
 	- Path to a pre-trained model zip. If provided, training is skipped and the model is evaluated.
 	- Note: when `--model` is used, `architecture` and `train_partner_mode` are inferred from the filename stem in the format `<architecture>_<train_partner_mode>_<timesteps>.zip` and used for GIF naming and CSV rows.
-- `--layout_name` (str, default: cramped_room)
+- `--layout_name` (str, default: three_chefs)
 	- Overcooked layout name. Can refer to a built-in layout or a local file in `layouts/`.
 - `--train_partner_mode` (str, default: curriculum)
-	- Partner schedule during training. Choices: `curriculum` or `random_pool`.
+	- Partner schedule during training. Choices: `curriculum`, `random_pool` or `adhoc_curriculum`.
 - `--train_noisy_epsilon` (float, default: 0.25)
 	- Epsilon used for the `noisy_greedy` partners in the training pool.
 - `--eval_partner` (str, default: ppo)
-	- Partner team used during evaluation and GIF rendering. Choices: `ppo`, `random`, `stationary`, `greedy`, `specialists`, `noisy_greedy`.
+	- Partner team used during evaluation and GIF rendering. Choices: `ppo`, `random`, `stationary`, `greedy`, `specialists`, `noisy_greedy`, `heldout_noisy_greedy`, `heldout_greedy_noisy`.
 - `--eval_partner_epsilon` (float, default: 0.25)
 	- Epsilon used when `--eval_partner noisy_greedy`.
-- `--deterministic_partner` (str, default: true)
+- `--eval_suite` (str, default: single)
+	- Evaluation suite. Choices: `single` (use `--eval_partner`) or `common` (fixed suite).
+- `--deterministic_partner` (str, default: false)
 	- Whether partner policies act deterministically during evaluation/rendering. Choices: `true`, `false`.
-- `--eval_episodes` (int, default: 20)
+- `--eval_episodes` (int, default: 100)
 	- Number of evaluation episodes.
 - `--results_csv` (str, default: evaluation_results.csv)
 	- Output CSV for evaluation summaries.
 - `--num_cpu` (int, default: 4)
 	- Number of CPU cores used for training environments.
-- `--architecture` (str, default: mlp)
+- `--architecture` (str, default: cnn)
 	- Policy architecture. Choices: `mlp`, `cnn`.
+- `--deterministic_ego` (str, default: true)
+	- Whether the ego policy acts deterministically during evaluation/rendering. Choices: `true`, `false`.
+- `--seed` (int, default: 42)
+	- Random seed used for training and evaluation.
 
 ## Outputs
 
-- Trained models: `models/<architecture>_<train_partner_mode>_<timesteps>.zip`
-- Gameplay GIFs: `gameplay_gifs/<architecture>_<train_partner_mode>_<eval_partner>.gif`
-- Heatmaps: `heatmaps/<architecture>_<train_partner_mode>_<eval_partner>.pdf`
+- Trained models: `models/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>.zip`
+- VecNormalize stats: `models/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>_vecnormalize.pkl`
+- Gameplay GIFs: `gameplay_gifs/<architecture>_<train_partner_mode>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.gif`
+- Heatmaps: `heatmaps/<architecture>_<train_partner_mode>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.pdf`
 - Evaluation results: `evaluation_results.csv`
