@@ -1,0 +1,4 @@
+timestamp,layout_name,eval_partner,num_episodes,deterministic_partner,deterministic_ego,seed,architecture,train_partner_mode,avg_soup_score,avg_coordination_score,std_total_score,avg_time_to_first,avg_time_between,avg_stood_still,avg_bumps,avg_misplaced,avg_deliveries,success_rate
+2026-05-25T09:16:27,three_chefs,ppo,100,True,True,202,cnn,curriculum_3000000,0.0,0.0,0.0,400.0,0.0,0.0,797.0,0.0,0.0,0.0
+2026-05-25T09:23:15,three_chefs,ppo,20,False,True,202,cnn,curriculum_3000000,0.0,0.0,0.0,400.0,0.0,1.55,766.85,1.6,0.0,0.0
+2026-05-25T09:24:42,three_chefs,ppo,20,False,False,202,cnn,curriculum_3000000,0.0,0.0,0.0,400.0,0.0,4.0,748.3,1.25,0.0,0.0

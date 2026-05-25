@@ -29,7 +29,7 @@ def check_behavioral_events(agent_action, prev_player, curr_player, mdp):
             
     return bumped, misplaced
 
-def run_single_episode(model, gym_env, episode_seed):
+def run_single_episode(model, gym_env, episode_seed, deterministic_ego=True):
     """Run one evaluation episode and collect task/behavior metrics."""
     np.random.seed(episode_seed)
     obs, _ = gym_env.reset(seed=episode_seed)
@@ -40,18 +40,19 @@ def run_single_episode(model, gym_env, episode_seed):
     step_count = 0
     
     ep_metrics = {
-        'total_score': 0,
+        'soup_score': 0,
         'dish_delivery_times': [],
         'stood_still_count': 0,
         'bump_count': 0,
-        'misplaced_count': 0
+        'misplaced_count': 0,
+        'coordination_score': 0.0
     }
     heatmap_updates = []
     
     prev_state = copy.deepcopy(base_env.state)
 
     while not done:
-        ego_action_idx, _ = model.predict(obs, deterministic=True)
+        ego_action_idx, _ = model.predict(obs, deterministic=deterministic_ego)
         obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
         done = terminated or truncated
         step_count += 1
@@ -69,7 +70,7 @@ def run_single_episode(model, gym_env, episode_seed):
         # Score & Delivery Tracking
         step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0] * num_players))
         if step_sparse_reward > 0:
-            ep_metrics['total_score'] += step_sparse_reward
+            ep_metrics['soup_score'] += step_sparse_reward
             ep_metrics['dish_delivery_times'].append(step_count)
 
         # Behavior Metrics Loop
@@ -78,13 +79,23 @@ def run_single_episode(model, gym_env, episode_seed):
             prev_player = prev_state.players[agent_idx]
             curr_player = current_state.players[agent_idx]
             
-            heatmap_updates.append(curr_player.position)
-            
             bumped, misplaced = check_behavioral_events(agent_action, prev_player, curr_player, mdp)
             ep_metrics['bump_count'] += bumped
             ep_metrics['misplaced_count'] += misplaced
-
+        
+        ego_idx=info["ego_idx"]
+        heatmap_updates.append(current_state.players[ego_idx].position)
         prev_state = copy.deepcopy(current_state)
+
+    # Coordination Score
+    deliveries = len(ep_metrics['dish_delivery_times'])
+    friction_penalty = (0.01 * ep_metrics['bump_count']) + (0.01 * ep_metrics['stood_still_count'])
+    denominator = deliveries + friction_penalty
+    
+    if denominator > 0:
+        ep_metrics['coordination_score'] = deliveries / denominator
+    else:
+        ep_metrics['coordination_score'] = 0.0
         
     return ep_metrics, step_count, heatmap_updates
 
@@ -93,7 +104,8 @@ def print_evaluation_summary(agg_metrics):
     print("\n================================================")
     print("FINAL BASELINE METRICS (Average over episodes)")
     print("================================================")
-    print(f"Avg Total Score: {np.mean(agg_metrics['scores']):.2f}")
+    print(f"Avg Soup Score: {np.mean(agg_metrics['soup_scores']):.2f}")
+    print(f"Avg Coordination Score: {np.mean(agg_metrics['coordination_scores']):.4f}")
     print(f"Avg Time to First Dish: {np.mean(agg_metrics['time_to_first']):.2f} steps")
     print(f"Avg Time Between Dishes: {np.mean(agg_metrics['avg_time_between']):.2f} steps")
     print(f"Avg Times Stood Still: {np.mean(agg_metrics['stood_still']):.2f}")
@@ -101,25 +113,27 @@ def print_evaluation_summary(agg_metrics):
     print(f"Avg Misplaced Items: {np.mean(agg_metrics['misplaced']):.2f}")
     print("================================================")
 
-def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True, heatmap_output_file=None):
+def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True, deterministic_ego=True, heatmap_output_file=None):
     """Evaluate a trained model for multiple episodes."""
     gym_env.set_deterministic_partner(deterministic_partner)
     mdp = gym_env.base_env.mdp
     
     agg_metrics = {
-        'scores': [], 'time_to_first': [], 'avg_time_between': [],
-        'stood_still': [], 'bumps': [], 'misplaced': [], 'deliveries': []
+        'soup_scores': [], 'coordination_scores': [], 'time_to_first': [], 
+        'avg_time_between': [], 'stood_still': [], 'bumps': [], 
+        'misplaced': [], 'deliveries': []
     }
     
     heatmap = np.zeros((mdp.width, mdp.height))
 
     for episode in range(num_episodes):
-        ep_metrics, final_step_count, heatmap_updates = run_single_episode(model, gym_env, episode)
+        ep_metrics, final_step_count, heatmap_updates = run_single_episode(model, gym_env, episode, deterministic_ego)
         
         for x, y in heatmap_updates:
             heatmap[x][y] += 1
             
-        agg_metrics['scores'].append(ep_metrics['total_score'])
+        agg_metrics['soup_scores'].append(ep_metrics['soup_score'])
+        agg_metrics['coordination_scores'].append(ep_metrics['coordination_score'])
         agg_metrics['stood_still'].append(ep_metrics['stood_still_count'])
         agg_metrics['bumps'].append(ep_metrics['bump_count'])
         agg_metrics['misplaced'].append(ep_metrics['misplaced_count'])
@@ -136,66 +150,131 @@ def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True, heatmap
     render_heatmap(heatmap, output_file=heatmap_output_file)
 
     summary = {
-        "avg_total_score": float(np.mean(agg_metrics["scores"])),
-        "std_total_score": float(np.std(agg_metrics["scores"])),
+        "avg_soup_score": float(np.mean(agg_metrics["soup_scores"])),
+        "avg_coordination_score": float(np.mean(agg_metrics["coordination_scores"])),
+        "std_total_score": float(np.std(agg_metrics["soup_scores"])),
         "avg_time_to_first": float(np.mean(agg_metrics["time_to_first"])),
         "avg_time_between": float(np.mean(agg_metrics["avg_time_between"])),
         "avg_stood_still": float(np.mean(agg_metrics["stood_still"])),
         "avg_bumps": float(np.mean(agg_metrics["bumps"])),
         "avg_misplaced": float(np.mean(agg_metrics["misplaced"])),
         "avg_deliveries": float(np.mean(agg_metrics["deliveries"])),
-        "success_rate": float(np.mean([score > 0 for score in agg_metrics["scores"]])),
+        "success_rate": float(np.mean([score > 0 for score in agg_metrics["soup_scores"]])),
     }
     return summary
 
 
 def evaluation_result(csv_file, result_row):
-    """Stores one summary row per (layout_name, eval_partner)."""
-    key_fields = ("layout_name", "eval_partner")
+    """Store one summary row per complete evaluation configuration."""
+
+    primary_metric = "avg_soup_score"
+
+    key_fields = (
+        "layout_name",
+        "eval_partner",
+        "train_partner_mode",
+        "architecture",
+        "deterministic_partner",
+        "deterministic_ego",
+        "seed"
+    )
+
     fieldnames = [
-        "timestamp", "layout_name", "eval_partner", "num_episodes",
-        "deterministic_partner", "architecture", "train_partner_mode",
-        "avg_total_score", "std_total_score", "avg_time_to_first",
-        "avg_time_between", "avg_stood_still", "avg_bumps",
-        "avg_misplaced", "avg_deliveries", "success_rate",
+        "timestamp",
+        "layout_name",
+        "eval_partner",
+        "num_episodes",
+        "deterministic_partner",
+        "deterministic_ego",
+        "seed",
+        "architecture",
+        "train_partner_mode",
+        "avg_soup_score",
+        "avg_coordination_score",
+        "std_total_score",
+        "avg_time_to_first",
+        "avg_time_between",
+        "avg_stood_still",
+        "avg_bumps",
+        "avg_misplaced",
+        "avg_deliveries",
+        "success_rate",
     ]
 
     rows = []
     previous_score = None
+    best_competitor_score = -float("inf")
+    best_competitor_mode = None
 
     if os.path.exists(csv_file):
         with open(csv_file, "r", newline="", encoding="utf-8") as f:
             reader = csv.DictReader(f)
             for row in reader:
                 same_key = all(row.get(k) == str(result_row.get(k)) for k in key_fields)
+                same_scenario = (
+                    row.get("layout_name") == str(result_row.get("layout_name"))
+                    and row.get("eval_partner") == str(result_row.get("eval_partner"))
+                    and row.get("architecture") == str(result_row.get("architecture"))
+                    and row.get("deterministic_partner")
+                    == str(result_row.get("deterministic_partner"))
+                    and row.get("deterministic_ego")
+                    == str(result_row.get("deterministic_ego")))
 
                 if same_key:
-                    previous_score = float(row.get("avg_total_score", 0) or 0)
+                    previous_score = float(row.get(primary_metric, 0) or 0)
                 else:
                     rows.append(row)
+                    if same_scenario:
+                        comp_score = float(row.get(primary_metric, 0) or 0)
+                        if comp_score > best_competitor_score:
+                            best_competitor_score = comp_score
+                            best_competitor_mode = (f"{row.get('train_partner_mode')} " f"({row.get('architecture')})")
 
     clean_row = {field: result_row.get(field, "") for field in fieldnames}
     rows.append(clean_row)
-
-    rows.sort(key=lambda row: float(row.get("avg_total_score", 0) or 0), reverse=True)
+    rows.sort(key=lambda row: float(row.get(primary_metric, 0) or 0),reverse=True)
 
     with open(csv_file, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
-    current_score = float(result_row.get("avg_total_score", 0) or 0)
+    current_score = float(result_row.get(primary_metric, 0) or 0)
+    coordination_score = float(result_row.get("avg_coordination_score", 0) or 0)
 
-    print(f"Results saved/updated in {csv_file} for layout='{result_row['layout_name']}' and partner='{result_row['eval_partner']}'\n")
+    print("\n================================================")
+    print(" CSV LEADERBOARD UPDATE")
+    print("================================================")
+    print(f" Layout:              {result_row['layout_name']}")
+    print(f" Eval Partner:        {result_row['eval_partner']}")
+    print(f" Config:              {result_row['train_partner_mode']} | {result_row['architecture']}")
+    print(f" Deterministic Ego:   {result_row['deterministic_ego']}")
+    print(f" Deterministic Team:  {result_row['deterministic_partner']}")
+    print(f" Seed:                {result_row['seed']}")
+    print("------------------------------------------------")
 
     if previous_score is None:
-        print(f"No previous result for this layout/partner. Current average score: {current_score:.2f}\n")
+        print(f" Personal Best: First run for this config. Soup Score: {current_score:.2f}")
     elif current_score > previous_score:
-        print(f"Average score improved: {previous_score:.2f} -> {current_score:.2f}\n")
+        print(f" Personal Best: [IMPROVED] {previous_score:.2f} -> {current_score:.2f}")
     elif current_score < previous_score:
-        print(f"Average score got worse: {previous_score:.2f} -> {current_score:.2f}\n")
+        print(f" Personal Best: [DROPPED] {previous_score:.2f} -> {current_score:.2f}")
     else:
-        print(f"Average score stayed the same: {current_score:.2f}\n")
+        print(f" Personal Best: [MAINTAINED] at {current_score:.2f}")
+
+    if best_competitor_mode is not None:
+        if current_score > best_competitor_score:
+            print(
+                f" Rival Status:  [NEW RECORD] Beat "f"{best_competitor_mode} ({best_competitor_score:.2f})!")
+        elif current_score < best_competitor_score:
+            print(f" Rival Status:  [LAGGING] Behind "f"{best_competitor_mode} ({best_competitor_score:.2f})")
+        else:
+            print(f" Rival Status:  [TIED] With "f"{best_competitor_mode} ({best_competitor_score:.2f})")
+    else:
+        print(" Rival Status:  No other training modes tested for this scenario.")
+
+    print(f" Coordination:  {coordination_score:.4f}")
+    print(f" File Saved:    {csv_file}")
 
 def render_heatmap(heatmap, output_file="baseline_heatmap.pdf"):
     """Render and save a heatmap of visited grid tiles."""
@@ -213,14 +292,14 @@ def render_heatmap(heatmap, output_file="baseline_heatmap.pdf"):
         output_path = path_obj
 
     plt.imshow(heatmap.T, cmap='hot', interpolation='nearest')
-    plt.title("Agent Movement Heatmap (Most Visited Tiles)")
+    plt.title("Ego Agent Movement Heatmap (Most Visited Tiles)")
     plt.colorbar(label="Visits")
     plt.xlabel("X Coordinate")
     plt.ylabel("Y Coordinate")
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
 
-def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5, deterministic_partner=True):
+def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5, deterministic_partner=False, deterministic_ego=True):
     """Record one episode and save it strictly as a GIF (No Frame Stacking)."""
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
@@ -254,7 +333,7 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5
     frames.append(frame_actual)
 
     while not done:
-        ego_action_idx, _ = model.predict(obs, deterministic=True)
+        ego_action_idx, _ = model.predict(obs, deterministic=deterministic_ego)
         obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
         done = terminated or truncated
         current_state = gym_env.base_env.state
