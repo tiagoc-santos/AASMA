@@ -10,7 +10,10 @@ from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
 
 def check_behavioral_events(agent_action, prev_player, curr_player, mdp):
-    """Detect simple behavior events for one agent transition."""
+    """Detect simple behavior events for one agent transition.
+    A bump is counted whenever the ego attempts to move but remains
+    in the same position after the transition.
+    """
     bumped = 0
     misplaced = 0
     
@@ -60,12 +63,11 @@ def run_single_episode(model, gym_env, episode_seed, deterministic_ego=True):
         current_state = base_env.state
         num_players = len(current_state.players)
         joint_action = info.get("joint_action", tuple([Action.STAY] * num_players))
+        ego_idx = info["ego_idx"]
 
-        # Stood Still Metric
-        ep_metrics['stood_still_count'] += sum(
-            1 for action in joint_action
-            if action == Action.STAY
-        )
+        # Ego inactivity metric
+        if joint_action[ego_idx] == Action.STAY:
+            ep_metrics['stood_still_count'] += 1
             
         # Score & Delivery Tracking
         step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0] * num_players))
@@ -73,15 +75,14 @@ def run_single_episode(model, gym_env, episode_seed, deterministic_ego=True):
             ep_metrics['soup_score'] += step_sparse_reward
             ep_metrics['dish_delivery_times'].append(step_count)
 
-        # Behavior Metrics Loop
-        for agent_idx in range(num_players):
-            agent_action = joint_action[agent_idx]
-            prev_player = prev_state.players[agent_idx]
-            curr_player = current_state.players[agent_idx]
+        # Behavior Metrics
+        agent_action = joint_action[ego_idx]
+        prev_player = prev_state.players[ego_idx]
+        curr_player = current_state.players[ego_idx]
             
-            bumped, misplaced = check_behavioral_events(agent_action, prev_player, curr_player, mdp)
-            ep_metrics['bump_count'] += bumped
-            ep_metrics['misplaced_count'] += misplaced
+        bumped, misplaced = check_behavioral_events(agent_action, prev_player, curr_player, mdp)
+        ep_metrics['bump_count'] += bumped
+        ep_metrics['misplaced_count'] += misplaced
         
         ego_idx=info["ego_idx"]
         heatmap_updates.append(current_state.players[ego_idx].position)
@@ -299,16 +300,20 @@ def render_heatmap(heatmap, output_file="baseline_heatmap.pdf"):
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
 
-def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5, deterministic_partner=False, deterministic_ego=True):
-    """Record one episode and save it strictly as a GIF (No Frame Stacking)."""
+def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", train_mode="loaded_model", fps=5, deterministic_partner=False, deterministic_ego=True):
+    """
+    Record one episode and save it as:
+        ../gameplay_gifs/<train_mode>_seed<seed>/<output_file>.gif
+    """
     os.environ["SDL_VIDEODRIVER"] = "dummy"
     pygame.init()
-    output_dir = "../gameplay_gifs"    
-    Path(output_dir).mkdir(parents=True, exist_ok=True)
-    path_obj = Path(output_file)
-    output_file = path_obj.with_suffix(".gif").name
-    output_path = os.path.join(output_dir, output_file)
-    
+
+    output_dir = Path("../gameplay_gifs") / f"{train_mode}_seed{seed}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_filename = Path(output_file).with_suffix(".gif").name
+    output_path = output_dir / output_filename
+
     visualizer = StateVisualizer()
     extra_colors = ["red", "yellow", "purple", "orange", "cyan", "magenta", "brown"]
 
@@ -319,32 +324,29 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", fps=5
         visualizer.player_colors.append(next_color)
 
     gym_env.set_deterministic_partner(deterministic_partner)
-    
+
     obs, _ = gym_env.reset()
     done = False
     initial_mdp = gym_env.base_env.mdp
-    
     frames = []
-    
+
     current_state = gym_env.base_env.state
     surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
     frame = pygame.surfarray.pixels3d(surface)
-    frame_actual = np.transpose(frame, (1, 0, 2)).copy()
-    frames.append(frame_actual)
+    frames.append(np.transpose(frame, (1, 0, 2)).copy())
 
     while not done:
         ego_action_idx, _ = model.predict(obs, deterministic=deterministic_ego)
         obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
         done = terminated or truncated
+
         current_state = gym_env.base_env.state
         surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
-        
         frame = pygame.surfarray.pixels3d(surface)
-        frame_actual = np.transpose(frame, (1, 0, 2)).copy() 
-        frames.append(frame_actual)
+        frames.append(np.transpose(frame, (1, 0, 2)).copy())
 
     pygame.quit()
 
     duration_ms = 1000 / fps
-    imageio.mimsave(output_path, frames, format='GIF', duration=duration_ms, loop=0)
+    imageio.mimsave(str(output_path), frames, format="GIF", duration=duration_ms, loop=0)
     print(f"Gameplay GIF saved to: {output_path}")

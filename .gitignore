@@ -221,3 +221,5 @@ __marimo__/
 
 /.venv
 *.pdf
+*.zip
+*.pkl

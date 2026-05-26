@@ -10,7 +10,8 @@ from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from env import OvercookedSelfPlayWrapper, PartnerAwareExtractor, make_env
 from evaluation import evaluate, evaluation_result, save_agent_gameplay
-from partner_agents import RandomPartner, StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent
+from partner_agents import (RandomPartner, StationaryPartner, GreedyChefAgent, SpecialistAgent, NoisyGreedyAgent, 
+YieldingGeneralistAgent, TimedRoleSwitchingAgent, PrepositioningServerAgent, AlternatingCookerAgent,)
 
 def build_training_partner_pool(num_partners, noisy_epsilon=0.25):
     """Build a pool of partner teams dynamically scaled to the required number of partners."""
@@ -30,50 +31,43 @@ def build_training_partner_pool(num_partners, noisy_epsilon=0.25):
 
 def build_pretrain_partner_pool(num_partners):
     """Competent partners used to learn the task before adaptation training."""
-    return [
-        [GreedyChefAgent() for _ in range(num_partners)],
+    return [[GreedyChefAgent() for _ in range(num_partners)],
         [GreedyChefAgent() if i % 2 == 0 else SpecialistAgent(role='fetcher') for i in range(num_partners)],
-        [GreedyChefAgent() if i % 2 == 0 else SpecialistAgent(role='plater') for i in range(num_partners)],
-    ]
-
+        [GreedyChefAgent() if i % 2 == 0 else SpecialistAgent(role='plater') for i in range(num_partners)],]
 
 def build_role_partner_pool(num_partners):
-    return [
-        [GreedyChefAgent() for _ in range(num_partners)],
-        [GreedyChefAgent() for _ in range(num_partners)],
-        [SpecialistAgent(role='fetcher') for _ in range(num_partners)],
-        [SpecialistAgent(role='plater') for _ in range(num_partners)],
-        [GreedyChefAgent() if i % 2 == 0 else SpecialistAgent(role='fetcher') for i in range(num_partners)],
-        [GreedyChefAgent() if i % 2 == 0 else SpecialistAgent(role='plater') for i in range(num_partners)],
-        ]
+    fetcher_team = [SpecialistAgent(role="fetcher") for _ in range(num_partners)]
+    plater_team = [SpecialistAgent(role="plater") for _ in range(num_partners)]
+    fetcher_stationary_team = [SpecialistAgent(role="fetcher") if i % 2 == 0 else StationaryPartner() for i in range(num_partners)]
+    plater_stationary_team = [SpecialistAgent(role="plater") if i % 2 == 0 else StationaryPartner() for i in range(num_partners)]
+    greedy_team = [GreedyChefAgent() for _ in range(num_partners)]
+
+    return [fetcher_team, fetcher_team, fetcher_team, plater_team, plater_team, 
+            plater_team, fetcher_stationary_team, plater_stationary_team, greedy_team,]
+    
 
 def build_robustness_partner_pool(num_partners):
-    """Selected Stage 3 pool: greedy retention, role diversity and noisy robustness."""
-
     greedy_team = [GreedyChefAgent() for _ in range(num_partners)]
     fetcher_team = [SpecialistAgent(role="fetcher") for _ in range(num_partners)]
     plater_team = [SpecialistAgent(role="plater") for _ in range(num_partners)]
-
-    greedy_fetcher_team = [GreedyChefAgent() if i % 2 == 0 else SpecialistAgent(role="fetcher") for i in range(num_partners)]
-    greedy_plater_team = [GreedyChefAgent() if i % 2 == 0 else SpecialistAgent(role="plater") for i in range(num_partners)]
-
-    noisy_015_team = [NoisyGreedyAgent(epsilon=0.15) for _ in range(num_partners)]
+    fetcher_stationary_team = [SpecialistAgent(role="fetcher") if i % 2 == 0 else StationaryPartner() for i in range(num_partners)]
+    plater_stationary_team = [SpecialistAgent(role="plater") if i % 2 == 0 else StationaryPartner() for i in range(num_partners)]
     noisy_025_team = [NoisyGreedyAgent(epsilon=0.25) for _ in range(num_partners)]
     noisy_035_team = [NoisyGreedyAgent(epsilon=0.35) for _ in range(num_partners)]
-
-    greedy_noisy_025_team = [GreedyChefAgent() if i % 2 == 0 else NoisyGreedyAgent(epsilon=0.25) for i in range(num_partners)]
     greedy_noisy_035_team = [GreedyChefAgent() if i % 2 == 0 else NoisyGreedyAgent(epsilon=0.35) for i in range(num_partners)]
 
-    return [greedy_team, greedy_team, greedy_team, greedy_team, greedy_team, greedy_team, fetcher_team, plater_team,
-        greedy_fetcher_team, greedy_plater_team, noisy_015_team, noisy_025_team, noisy_035_team, noisy_035_team,
-        greedy_noisy_025_team, greedy_noisy_035_team, greedy_noisy_035_team,]
-
+    return [greedy_team, greedy_team, greedy_team,
+        fetcher_team, fetcher_team, fetcher_team,
+        plater_team, plater_team, plater_team,
+        fetcher_stationary_team, plater_stationary_team,
+        noisy_025_team, noisy_035_team, noisy_035_team,
+        greedy_noisy_035_team, greedy_noisy_035_team,]
 
 def train_adhoc_curriculum(model, env, total_timesteps, num_partners, checkpoint_dir):
     """Selected three-stage ad hoc curriculum."""
 
     pretrain_steps = total_timesteps // 4
-    role_steps = total_timesteps // 8
+    role_steps = total_timesteps // 4
     robustness_steps = total_timesteps - pretrain_steps - role_steps
 
     print(f"Ad hoc stage 1/3 - task pretraining ({pretrain_steps} steps)")
@@ -126,11 +120,21 @@ def make_eval_team(partner_type, num_partners, trained_model, noisy_epsilon=0.25
         return [NoisyGreedyAgent(epsilon=0.40) for _ in range(num_partners)]
     if partner_type == 'heldout_greedy_noisy':
         return [GreedyChefAgent() if i % 2 == 0 else NoisyGreedyAgent(epsilon=0.40) for i in range(num_partners)]
+    if partner_type == "alternating_cookers":
+        return [AlternatingCookerAgent(worker_slot=0), AlternatingCookerAgent(worker_slot=1),]
+    if partner_type == "prepositioning_servers":
+        return [PrepositioningServerAgent(server_slot=0), PrepositioningServerAgent(server_slot=1),]
+    if partner_type == "role_switchers":
+        return [TimedRoleSwitchingAgent(worker_slot=0, switch_step=200), 
+                TimedRoleSwitchingAgent(worker_slot=1, switch_step=200),]
+    if partner_type == "yielding_generalists" and num_partners == 2:
+        return [YieldingGeneralistAgent(worker_slot=0),YieldingGeneralistAgent(worker_slot=1),]
+    
     raise ValueError(f"Unsupported partner_type: {partner_type}")
 
 
 def train_baseline(total_timesteps=2000000,
-                   train_partner_mode="curriculum", train_noisy_epsilon=0.25,
+                   train_partner_mode="self_play", train_noisy_epsilon=0.25,
                    layout_name="three_chefs", num_cpu=4, architecture='cnn', seed=42):
     
     raw_env = SubprocVecEnv([make_env(layout_name, i, architecture=architecture, seed=seed) for i in range(num_cpu)])
@@ -176,12 +180,15 @@ def train_baseline(total_timesteps=2000000,
             else: 
                 num_players = env.get_attr("num_players")[0]
                 if i == 0:
-                    env.env_method("set_partner_models", [RandomPartner()] * num_players)
-                    env.env_method("set_deterministic_partner", False)
+                    partner_models = [RandomPartner() for _ in range(num_players)]
                 else:
                     temp_partner_path = output_dir / f"temp_partner_iter_{i}.zip"
                     model.save(str(temp_partner_path))
                     partner_model = PPO.load(str(temp_partner_path))
+                    partner_models = [partner_model for _ in range(num_players)]
+                    
+                env.env_method("set_partner_models", partner_models)
+                env.env_method("set_deterministic_partner", False)
 
             model.learn(total_timesteps=timesteps_per_iteration, reset_num_timesteps=False)
 
@@ -210,20 +217,21 @@ if __name__ == "__main__":
                         help='The filename of an already trained model')
     parser.add_argument('--layout_name', type=str, default='three_chefs',
                         help='Overcooked layout/room to train/evaluate on')
-    parser.add_argument('--train_partner_mode', type=str, default='curriculum',
-                        choices=['curriculum', 'random_pool', 'adhoc_curriculum'],
-                        help='Training partner schedule: self-play curriculum, static random_pool or three-stage adhoc_curriculum')
+    parser.add_argument('--train_partner_mode', type=str, default='self_play',
+                        choices=['self_play', 'random_pool', 'adhoc_curriculum'],
+                        help='Training partner schedule: self-play, static random_pool or three-stage adhoc_curriculum')
     parser.add_argument('--train_noisy_epsilon', type=float, default=0.25,
                         help='Epsilon used for NoisyGreedyAgent in training partner pool')
     parser.add_argument('--eval_partner', type=str, default='ppo',
                         choices=['ppo', 'random', 'stationary', 'greedy', 'specialists', 'noisy_greedy',
-                                 'heldout_noisy_greedy', 'heldout_greedy_noisy'],
+                                 'heldout_noisy_greedy', 'heldout_greedy_noisy', "alternating_cookers", "prepositioning_servers",
+                                 "role_switchers", "yielding_generalists",],
                         help='Partner to use during single-team evaluation and gameplay rendering')
     parser.add_argument('--eval_partner_epsilon', type=float, default=0.25,
                         help='Epsilon for noisy_greedy evaluation partner')
     parser.add_argument('--eval_suite', type=str, default='single',
-                        choices=['single', 'common'],
-                        help='Use single eval_partner or the fixed common external test suite')
+                        choices=['single', 'common', 'test'],
+                        help='Evaluation suite to execute')
     parser.add_argument('--deterministic_partner', type=str, default='false',
                         choices=['true', 'false'],
                         help='Whether partner uses deterministic actions during eval/rendering')
@@ -278,6 +286,8 @@ if __name__ == "__main__":
 
     if args.eval_suite == "common":
         eval_partner_types = ["greedy", "specialists", "heldout_noisy_greedy", "heldout_greedy_noisy",]
+    elif args.eval_suite == "test":
+        eval_partner_types = ["alternating_cookers", "prepositioning_servers", "role_switchers", "yielding_generalists",]
     else:
         eval_partner_types = [args.eval_partner]
 
@@ -317,4 +327,4 @@ if __name__ == "__main__":
         evaluation_result("../" + args.results_csv, result_row)
 
         gif_filename = (f"{args.architecture}_{train_mode_label}_{eval_partner_type}_"f"seed{args.seed}_{ego_eval_label}_{partner_eval_label}.gif")
-        save_agent_gameplay(trained_model, env, output_file=gif_filename,deterministic_partner=deterministic_partner, deterministic_ego=deterministic_ego,)
+        save_agent_gameplay(trained_model, env, output_file=gif_filename, train_mode=train_mode_label, deterministic_partner=deterministic_partner, deterministic_ego=deterministic_ego,)
