@@ -9,6 +9,7 @@ import torch as th
 import torch.nn as nn
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
+from sb3_contrib import RecurrentPPO
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.mdp.overcooked_env import OvercookedEnv
 from overcooked_ai_py.mdp.overcooked_mdp import OvercookedGridworld
@@ -29,22 +30,55 @@ class OvercookedSelfPlayWrapper(gym.Env):
         self.base_env.reset()
 
         self.lossless_channels = 17 + self.num_players * 5
-        self.history_len = history_len
-        self.action_history_size = self.history_len * self.num_actions * self.num_players
+        # Feed-forward models keep explicit history.
+        # RecurrentPPO receives one current frame/action and stores history in its LSTM.
+        self.history_len = 1 if architecture == "rnn" else history_len
 
-        if architecture == 'mlp':
-            grid_shape = (self.lossless_channels * self.mdp.width * self.mdp.height * self.history_len,)
-        elif architecture == 'cnn':
-            grid_shape = (self.lossless_channels * self.history_len, self.mdp.width, self.mdp.height)
+        self.action_history_size = (self.history_len * self.num_actions * self.num_players)
+        self.latest_joint_action_size = self.num_actions * self.num_players
+        if architecture == "mlp":
+            grid_shape = (self.lossless_channels * self.mdp.width * self.mdp.height
+                * self.history_len,)
+            action_shape = (self.action_history_size,)
+
+        elif architecture == "cnn":
+            grid_shape = (
+                self.lossless_channels * self.history_len,
+                self.mdp.width,
+                self.mdp.height,)
+            action_shape = (self.action_history_size,)
+
+        elif architecture == "rnn":
+            # Current spatial observation; temporal memory is maintained by the LSTM.
+            grid_shape = (
+                self.lossless_channels,
+                self.mdp.width,
+                self.mdp.height,)
+            action_shape = (self.latest_joint_action_size,)
+
         else:
-            raise ValueError(f"Unsupported architecture: {architecture!r}. ""Expected 'cnn' or 'mlp'.")
-            
+            raise ValueError(
+                f"Unsupported architecture: {architecture!r}. "
+                "Expected 'cnn', 'mlp' or 'rnn'.")
+
         self.observation_space = spaces.Dict({
-            "grid_obs": spaces.Box(low=0.0, high=np.inf, shape=grid_shape, dtype=np.float32),
-            "action_history": spaces.Box(low=0.0, high=1.0, shape=(self.action_history_size,), dtype=np.float32)
+            "grid_obs": spaces.Box(
+                low=0.0,
+                high=np.inf,
+                shape=grid_shape,
+                dtype=np.float32,
+            ),
+            "action_history": spaces.Box(
+                low=0.0,
+                high=1.0,
+                shape=action_shape,
+                dtype=np.float32,
+            ),
         })
         
         self.partner_models = partner_models or [None] * self.num_players
+        self.partner_lstm_states = [None] * self.num_players
+        self.partner_episode_starts = np.ones(self.num_players, dtype=bool,)
         self.partner_pool = []
         self.ego_idx = 0
 
@@ -62,7 +96,13 @@ class OvercookedSelfPlayWrapper(gym.Env):
         self.deterministic_partner = is_deterministic
     
     def set_partner_models(self, models):
-        self.partner_models = models
+        if len(models) != self.num_players:
+            raise ValueError("partner_models must contain one slot per player position. "
+                f"Expected {self.num_players}, got {len(models)}.")
+
+        self.partner_models = list(models)
+        self.partner_lstm_states = [None] * self.num_players
+        self.partner_episode_starts = np.ones(self.num_players, dtype=bool,)
 
     def set_partner_pool(self, pool):
         self.partner_pool = pool
@@ -84,6 +124,8 @@ class OvercookedSelfPlayWrapper(gym.Env):
                     self.partner_models[i] = selected_team[team_member_idx]
                     team_member_idx += 1
 
+        self.partner_lstm_states = [None] * self.num_players
+        self.partner_episode_starts = np.ones(self.num_players, dtype=bool,)
         self.obs_history = {i: deque(maxlen=self.history_len) for i in range(self.num_players)}
         
         for i in range(self.num_players):
@@ -101,7 +143,8 @@ class OvercookedSelfPlayWrapper(gym.Env):
         return self.current_obs, {}
 
     def step(self, action):
-        ego_action_str = Action.INDEX_TO_ACTION[int(action)]
+        ego_action_idx = int(np.asarray(action).item())
+        ego_action_str = Action.INDEX_TO_ACTION[ego_action_idx]
 
         partner_indices = [
             i for i in range(self.num_players)
@@ -116,22 +159,32 @@ class OvercookedSelfPlayWrapper(gym.Env):
 
             if partner_model is not None:
                 partner_obs = self.make_simple_obs(partner_idx)
+                if isinstance(partner_model, RecurrentPPO):
+                    partner_action_idx, next_lstm_state = partner_model.predict(
+                        partner_obs,
+                        state=self.partner_lstm_states[partner_idx],
+                        episode_start=np.array(
+                            [self.partner_episode_starts[partner_idx]],
+                            dtype=bool,),
+                        deterministic=self.deterministic_partner,)
+                    self.partner_lstm_states[partner_idx] = next_lstm_state
+                    self.partner_episode_starts[partner_idx] = False
 
-                predict_kwargs = dict(deterministic=self.deterministic_partner)
+                else:
+                    predict_kwargs = dict(deterministic=self.deterministic_partner)
 
-                if getattr(partner_model, 'needs_state', False):
-                    predict_kwargs.update(
-                        state=self.base_env.state,
-                        player_idx=partner_idx,
-                        mdp=self.mdp,
-                    )
+                    if getattr(partner_model, "needs_state", False):
+                        predict_kwargs.update(
+                            state=self.base_env.state,
+                            player_idx=partner_idx,
+                            mdp=self.mdp,
+                        )
+                    partner_action_idx, _ = partner_model.predict(
+                        partner_obs,
+                        **predict_kwargs,)
+                partner_action_idx = int(np.asarray(partner_action_idx).item())
+                partner_action_str = Action.INDEX_TO_ACTION[partner_action_idx]
 
-                partner_action_idx, _ = partner_model.predict(
-                    partner_obs,
-                    **predict_kwargs
-                )
-
-                partner_action_str = Action.INDEX_TO_ACTION[int(partner_action_idx)]
             else:
                 partner_action_str = Action.STAY
 
@@ -187,30 +240,55 @@ class OvercookedSelfPlayWrapper(gym.Env):
         
         cnn_obs = np.transpose(player_grid, (2, 0, 1)).astype(np.float32)
         
-        if self.architecture == 'cnn':
+        if self.architecture in {"cnn", "rnn"}:
             return cnn_obs
-        
-        elif self.architecture == 'mlp':
+
+        elif self.architecture == "mlp":
             return cnn_obs.flatten()
+
+        raise ValueError(f"Unsupported architecture: {self.architecture!r}")
 
     def make_simple_obs(self, controlled_idx=None):
         if controlled_idx is None:
             controlled_idx = self.ego_idx
+            
+        if self.architecture == "cnn":
+            grid_obs = np.concatenate(list(self.obs_history[controlled_idx]),axis=0,)
+        elif self.architecture == "mlp":
+            grid_obs = np.concatenate(list(self.obs_history[controlled_idx]),axis=0,)
+        elif self.architecture == "rnn":
+            # Current frame only; LSTM stores temporal information.
+            grid_obs = self.obs_history[controlled_idx][-1]
+        else:
+            raise ValueError(f"Unsupported architecture: {self.architecture!r}")
 
-        if self.architecture == 'cnn':
-            grid_stack = np.concatenate(list(self.obs_history[controlled_idx]), axis=0)
-        elif self.architecture == 'mlp':
-            grid_stack = np.concatenate(list(self.obs_history[controlled_idx]))
+        if self.architecture == "rnn":
+            action_features = np.zeros(
+                self.latest_joint_action_size,
+                dtype=np.float32,
+            )
 
-        action_features = np.zeros(self.action_history_size, dtype=np.float32)
-        for time_idx, joint_action in enumerate(self.action_history):
-            for player_idx, act in enumerate(joint_action):
-                act_idx = Action.ALL_ACTIONS.index(act) if act in Action.ALL_ACTIONS else Action.ALL_ACTIONS.index(Action.STAY)
-                offset = (time_idx * self.num_players * self.num_actions
-                    + player_idx * self.num_actions + act_idx)
+            latest_joint_action = self.action_history[-1]
+            for player_idx, act in enumerate(latest_joint_action):
+                act_idx = (Action.ALL_ACTIONS.index(act) if act in Action.ALL_ACTIONS
+                    else Action.ALL_ACTIONS.index(Action.STAY))
+                offset = player_idx * self.num_actions + act_idx
                 action_features[offset] = 1.0
 
-        return {"grid_obs": grid_stack, "action_history": action_features}
+        else:
+            action_features = np.zeros(self.action_history_size, dtype=np.float32,)
+
+            for time_idx, joint_action in enumerate(self.action_history):
+                for player_idx, act in enumerate(joint_action):
+                    act_idx = (Action.ALL_ACTIONS.index(act) if act in Action.ALL_ACTIONS
+                        else Action.ALL_ACTIONS.index(Action.STAY))
+
+                    offset = (time_idx * self.num_players * self.num_actions
+                        + player_idx * self.num_actions
+                        + act_idx)
+                    action_features[offset] = 1.0
+
+        return {"grid_obs": grid_obs, "action_history": action_features,}
     
     def lossless_state_encoding_3p(self, overcooked_state, primary_agent_idx, horizon=400):
         """Lossless-style grid encoding that supports 2+ players."""
@@ -347,48 +425,76 @@ class OvercookedSelfPlayWrapper(gym.Env):
         return state_mask_stack
 
 class PartnerAwareExtractor(BaseFeaturesExtractor):
-    """Custom Multi-Input Extractor that processes stacked grids and action histories."""
-    def __init__(self, observation_space: spaces.Dict, features_dim=256, architecture='cnn'):
-        super().__init__(observation_space, features_dim)
-        self.architecture = architecture
+    """
+    Multi-input spatial/action feature extractor.
 
+    For architecture='rnn', this remains a CNN spatial encoder.
+    Temporal memory is handled by RecurrentPPO's LSTM policy.
+    """
+
+    def __init__(self, observation_space: spaces.Dict, features_dim=256,
+                 architecture="cnn",):
+        super().__init__(observation_space, features_dim)
+
+        self.architecture = architecture
         grid_space = observation_space.spaces["grid_obs"]
-        if architecture == 'cnn':
+        action_space = observation_space.spaces["action_history"]
+
+        if architecture in {"cnn", "rnn"}:
             n_input_channels = grid_space.shape[0]
             self.grid_net = nn.Sequential(
-                nn.Conv2d(n_input_channels, 32, kernel_size=3, stride=1, padding=1),
+                nn.Conv2d(
+                    n_input_channels,
+                    32,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                ),
                 nn.ReLU(),
-                nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+                nn.Conv2d(
+                    32,
+                    64,
+                    kernel_size=3,
+                    stride=1,
+                    padding=1,
+                ),
                 nn.ReLU(),
                 nn.Flatten(),
             )
             with th.no_grad():
-                n_flatten = self.grid_net(th.zeros(1, *grid_space.shape)).shape[1]
-        else:
+                n_flatten = self.grid_net(
+                    th.zeros(1, *grid_space.shape)).shape[1]
+
+        elif architecture == "mlp":
             n_input = grid_space.shape[0]
+
             self.grid_net = nn.Sequential(
                 nn.Flatten(),
                 nn.Linear(n_input, 256),
                 nn.ReLU(),
                 nn.Linear(256, 256),
-                nn.ReLU()
+                nn.ReLU(),
             )
             n_flatten = 256
 
-        act_dim = observation_space.spaces["action_history"].shape[0]
-        self.act_net = nn.Sequential(
-            nn.Linear(act_dim, 64),
-            nn.ReLU()
-        )
+        else:
+            raise ValueError(f"Unsupported architecture: {architecture!r}")
 
+        action_dim = action_space.shape[0]
+
+        self.act_net = nn.Sequential(
+            nn.Linear(action_dim, 64),
+            nn.ReLU(),
+        )
         self.linear = nn.Sequential(
             nn.Linear(n_flatten + 64, features_dim),
             nn.ReLU(),
         )
 
     def forward(self, observations):
-        grid_feat = self.grid_net(observations["grid_obs"])
-        act_feat = self.act_net(observations["action_history"])
+        grid_feat = self.grid_net(observations["grid_obs"].float())
+        act_feat = self.act_net(observations["action_history"].float())
+
         return self.linear(th.cat([grid_feat, act_feat], dim=1))
 
 def make_env(layout_name, rank, architecture, seed=0):

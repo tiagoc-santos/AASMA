@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import torch as th
 from stable_baselines3 import PPO
+from sb3_contrib import RecurrentPPO
 from stable_baselines3.common.utils import set_random_seed
 from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize
 from env import OvercookedSelfPlayWrapper, PartnerAwareExtractor, make_env
@@ -132,6 +133,11 @@ def make_eval_team(partner_type, num_partners, trained_model, noisy_epsilon=0.25
     
     raise ValueError(f"Unsupported partner_type: {partner_type}")
 
+def load_trained_policy(path, architecture, env=None, device="auto"):
+    """Load the correct SB3 algorithm for the selected architecture."""
+    algorithm_class = RecurrentPPO if architecture == "rnn" else PPO
+
+    return algorithm_class.load(str(path), env=env, device=device,)
 
 def train_baseline(total_timesteps=2000000,
                    train_partner_mode="self_play", train_noisy_epsilon=0.25,
@@ -140,23 +146,53 @@ def train_baseline(total_timesteps=2000000,
     raw_env = SubprocVecEnv([make_env(layout_name, i, architecture=architecture, seed=seed) for i in range(num_cpu)])
     env = VecNormalize(raw_env, norm_obs=False, norm_reward=True, clip_reward=10.0)
     
-    model = PPO(
-        "MultiInputPolicy", 
-        env, 
-        learning_rate=1e-4,
-        n_steps=2048 // num_cpu,
-        batch_size=256 if architecture == 'cnn' else 512,
-        n_epochs=5,
-        ent_coef=0.01,
-        target_kl=0.03,
-        seed=seed, 
-        verbose=1,
-        device="auto",
-        policy_kwargs=dict(
-            features_extractor_class=PartnerAwareExtractor,
-            features_extractor_kwargs=dict(features_dim=256, architecture=architecture),
+    policy_kwargs = dict(
+    features_extractor_class=PartnerAwareExtractor,
+    features_extractor_kwargs=dict(
+        features_dim=256,
+        architecture=architecture,
+    ),
+    normalize_images=False,
+    activation_fn=th.nn.ReLU,
+)
+
+    if architecture == "rnn":
+        policy_kwargs.update(
+            lstm_hidden_size=256,
+            n_lstm_layers=1,
+            shared_lstm=False,
+            enable_critic_lstm=True,
+            net_arch=dict(pi=[128], vf=[128],),)
+
+        model = RecurrentPPO(
+            "MultiInputLstmPolicy",
+            env,
+            learning_rate=1e-4,
+            n_steps=2048 // num_cpu,
+            batch_size=128,
+            n_epochs=5,
+            ent_coef=0.01,
+            target_kl=0.03,
+            seed=seed,
+            verbose=1,
+            device="auto",
+            policy_kwargs=policy_kwargs,
         )
-    )
+    else:
+        model = PPO(
+            "MultiInputPolicy",
+            env,
+            learning_rate=1e-4,
+            n_steps=2048 // num_cpu,
+            batch_size=256 if architecture == "cnn" else 512,
+            n_epochs=5,
+            ent_coef=0.01,
+            target_kl=0.03,
+            seed=seed,
+            verbose=1,
+            device="auto",
+            policy_kwargs=policy_kwargs,
+        )
     
     iterations = 10
     timesteps_per_iteration = total_timesteps // iterations
@@ -184,7 +220,7 @@ def train_baseline(total_timesteps=2000000,
                 else:
                     temp_partner_path = output_dir / f"temp_partner_iter_{i}.zip"
                     model.save(str(temp_partner_path))
-                    partner_model = PPO.load(str(temp_partner_path))
+                    partner_model = load_trained_policy(temp_partner_path, architecture, device="cpu")
                     partner_models = [partner_model for _ in range(num_players)]
                     
                 env.env_method("set_partner_models", partner_models)
@@ -202,7 +238,7 @@ def train_baseline(total_timesteps=2000000,
     print(f"Saved final model: {output_path}")
     
     eval_env = OvercookedSelfPlayWrapper(layout_name=layout_name, architecture=architecture)
-    loaded_partner = PPO.load(str(output_path))
+    loaded_partner = load_trained_policy(output_path, architecture,device="cpu")
     eval_env.set_partner_models([loaded_partner] * eval_env.num_players)
     env.close()
     
@@ -243,7 +279,7 @@ if __name__ == "__main__":
                         help='Number of cpu cores used during training')
     parser.add_argument('--architecture', type=str, default='cnn',
                         help='Type of architecture to be used',
-                        choices=['mlp', 'cnn'])
+                        choices=['mlp', 'cnn', 'rnn'])
     parser.add_argument('--deterministic_ego', type=str, default='true',
                         choices=['true', 'false'], help='Whether the ego policy selects deterministic actions during evaluation')
     parser.add_argument("--seed", type=int, default=42, help="Random seed used for training")  
@@ -268,9 +304,9 @@ if __name__ == "__main__":
             seed=args.seed)
     else:
         model_stem_parts = Path(args.model).stem.split("_")
-        if len(model_stem_parts) >= 3:
+        if model_stem_parts[0] in {"cnn", "mlp", "rnn"}:
             args.architecture = model_stem_parts[0]
-        trained_model = PPO.load(args.model)
+        trained_model = load_trained_policy(args.model, args.architecture, device="auto")
         env = OvercookedSelfPlayWrapper(layout_name=args.layout_name, architecture=args.architecture) 
         model_filename = Path(args.model).name
 
@@ -327,4 +363,4 @@ if __name__ == "__main__":
         evaluation_result("../" + args.results_csv, result_row)
 
         gif_filename = (f"{args.architecture}_{train_mode_label}_{eval_partner_type}_"f"seed{args.seed}_{ego_eval_label}_{partner_eval_label}.gif")
-        save_agent_gameplay(trained_model, env, output_file=gif_filename, train_mode=train_mode_label, deterministic_partner=deterministic_partner, deterministic_ego=deterministic_ego,)
+        save_agent_gameplay(trained_model, env, output_file=gif_filename, train_mode=train_mode_label, seed=seed, deterministic_partner=deterministic_partner, deterministic_ego=deterministic_ego,)

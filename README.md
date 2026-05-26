@@ -77,7 +77,7 @@ Run the three-stage ad-hoc curriculum:
 python training.py --train_partner_mode adhoc_curriculum
 ```
 
-Evaluate with the fixed external suite:
+Evaluate with the validation suite:
 
 ```bash
 python training.py --eval_suite common

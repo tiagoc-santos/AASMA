@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pygame
 import imageio
+from sb3_contrib import RecurrentPPO
 from pathlib import Path
 from overcooked_ai_py.mdp.actions import Action, Direction
 from overcooked_ai_py.visualization.state_visualizer import StateVisualizer
@@ -32,72 +33,87 @@ def check_behavioral_events(agent_action, prev_player, curr_player, mdp):
             
     return bumped, misplaced
 
-def run_single_episode(model, gym_env, episode_seed, deterministic_ego=True):
+def run_single_episode(model, gym_env, episode_seed, deterministic_ego=True,):
     """Run one evaluation episode and collect task/behavior metrics."""
     np.random.seed(episode_seed)
     obs, _ = gym_env.reset(seed=episode_seed)
     base_env = gym_env.base_env
     mdp = base_env.mdp
-    
+    is_recurrent = isinstance(model, RecurrentPPO)
+    lstm_state = None
+    episode_start = np.ones((1,), dtype=bool)
+
     done = False
     step_count = 0
     
     ep_metrics = {
-        'soup_score': 0,
-        'dish_delivery_times': [],
-        'stood_still_count': 0,
-        'bump_count': 0,
-        'misplaced_count': 0,
-        'coordination_score': 0.0
+        "soup_score": 0,
+        "dish_delivery_times": [],
+        "stood_still_count": 0,
+        "bump_count": 0,
+        "misplaced_count": 0,
+        "coordination_score": 0.0,
     }
+
     heatmap_updates = []
-    
     prev_state = copy.deepcopy(base_env.state)
 
     while not done:
-        ego_action_idx, _ = model.predict(obs, deterministic=deterministic_ego)
+        if is_recurrent:
+            ego_action_idx, lstm_state = model.predict(
+                obs,
+                state=lstm_state,
+                episode_start=episode_start,
+                deterministic=deterministic_ego,)
+        else:
+            ego_action_idx, _ = model.predict(obs, deterministic=deterministic_ego,)
+
         obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
         done = terminated or truncated
+        episode_start = np.array([done], dtype=bool)
         step_count += 1
-        
+
         current_state = base_env.state
         num_players = len(current_state.players)
-        joint_action = info.get("joint_action", tuple([Action.STAY] * num_players))
+        joint_action = info.get("joint_action", tuple([Action.STAY] * num_players),)
         ego_idx = info["ego_idx"]
 
-        # Ego inactivity metric
         if joint_action[ego_idx] == Action.STAY:
-            ep_metrics['stood_still_count'] += 1
-            
-        # Score & Delivery Tracking
-        step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0] * num_players))
-        if step_sparse_reward > 0:
-            ep_metrics['soup_score'] += step_sparse_reward
-            ep_metrics['dish_delivery_times'].append(step_count)
+            ep_metrics["stood_still_count"] += 1
 
-        # Behavior Metrics
+        step_sparse_reward = sum(info.get("sparse_r_by_agent", [0.0] * num_players))
+
+        if step_sparse_reward > 0:
+            ep_metrics["soup_score"] += step_sparse_reward
+            ep_metrics["dish_delivery_times"].append(step_count)
+
         agent_action = joint_action[ego_idx]
         prev_player = prev_state.players[ego_idx]
         curr_player = current_state.players[ego_idx]
-            
-        bumped, misplaced = check_behavioral_events(agent_action, prev_player, curr_player, mdp)
-        ep_metrics['bump_count'] += bumped
-        ep_metrics['misplaced_count'] += misplaced
-        
-        ego_idx=info["ego_idx"]
-        heatmap_updates.append(current_state.players[ego_idx].position)
+
+        bumped, misplaced = check_behavioral_events(
+            agent_action,
+            prev_player,
+            curr_player,
+            mdp,)
+
+        ep_metrics["bump_count"] += bumped
+        ep_metrics["misplaced_count"] += misplaced
+
+        heatmap_updates.append(curr_player.position)
         prev_state = copy.deepcopy(current_state)
 
-    # Coordination Score
-    deliveries = len(ep_metrics['dish_delivery_times'])
-    friction_penalty = (0.01 * ep_metrics['bump_count']) + (0.01 * ep_metrics['stood_still_count'])
+    deliveries = len(ep_metrics["dish_delivery_times"])
+
+    friction_penalty = (0.01 * ep_metrics["bump_count"] + 0.01 * ep_metrics["stood_still_count"])
+
     denominator = deliveries + friction_penalty
-    
+
     if denominator > 0:
-        ep_metrics['coordination_score'] = deliveries / denominator
+        ep_metrics["coordination_score"] = deliveries / denominator
     else:
-        ep_metrics['coordination_score'] = 0.0
-        
+        ep_metrics["coordination_score"] = 0.0
+
     return ep_metrics, step_count, heatmap_updates
 
 def print_evaluation_summary(agg_metrics):
@@ -300,7 +316,8 @@ def render_heatmap(heatmap, output_file="baseline_heatmap.pdf"):
     plt.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close()
 
-def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", train_mode="loaded_model", fps=5, deterministic_partner=False, deterministic_ego=True):
+def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", train_mode="loaded_model",
+    seed=42, fps=5, deterministic_partner=False, deterministic_ego=True,):
     """
     Record one episode and save it as:
         ../gameplay_gifs/<train_mode>_seed<seed>/<output_file>.gif
@@ -315,7 +332,15 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", train
     output_path = output_dir / output_filename
 
     visualizer = StateVisualizer()
-    extra_colors = ["red", "yellow", "purple", "orange", "cyan", "magenta", "brown"]
+    extra_colors = [
+        "red",
+        "yellow",
+        "purple",
+        "orange",
+        "cyan",
+        "magenta",
+        "brown",
+    ]
 
     while len(visualizer.player_colors) < gym_env.num_players:
         next_color = extra_colors[
@@ -327,26 +352,41 @@ def save_agent_gameplay(model, gym_env, output_file="aasma_ego_agent.gif", train
 
     obs, _ = gym_env.reset()
     done = False
+
+    is_recurrent = isinstance(model, RecurrentPPO)
+    lstm_state = None
+    episode_start = np.ones((1,), dtype=bool)
+
     initial_mdp = gym_env.base_env.mdp
     frames = []
 
     current_state = gym_env.base_env.state
-    surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
+    surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx,)
     frame = pygame.surfarray.pixels3d(surface)
     frames.append(np.transpose(frame, (1, 0, 2)).copy())
 
     while not done:
-        ego_action_idx, _ = model.predict(obs, deterministic=deterministic_ego)
+        if is_recurrent:
+            ego_action_idx, lstm_state = model.predict(obs,
+                state=lstm_state,
+                episode_start=episode_start,
+                deterministic=deterministic_ego,)
+        else:
+            ego_action_idx, _ = model.predict(obs, deterministic=deterministic_ego,)
+
         obs, reward, terminated, truncated, info = gym_env.step(ego_action_idx)
+
         done = terminated or truncated
+        episode_start = np.array([done], dtype=bool)
 
         current_state = gym_env.base_env.state
-        surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx)
+        surface = visualizer.render_state(current_state, initial_mdp.terrain_mtx,)
         frame = pygame.surfarray.pixels3d(surface)
         frames.append(np.transpose(frame, (1, 0, 2)).copy())
 
     pygame.quit()
 
     duration_ms = 1000 / fps
-    imageio.mimsave(str(output_path), frames, format="GIF", duration=duration_ms, loop=0)
+    imageio.mimsave(str(output_path),frames, format="GIF", duration=duration_ms, loop=0,)
+
     print(f"Gameplay GIF saved to: {output_path}")
