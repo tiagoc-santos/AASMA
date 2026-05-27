@@ -130,7 +130,8 @@ def print_evaluation_summary(agg_metrics):
     print(f"Avg Misplaced Items: {np.mean(agg_metrics['misplaced']):.2f}")
     print("================================================")
 
-def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True, deterministic_ego=True, heatmap_output_file=None):
+def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True, deterministic_ego=True, 
+             heatmap_output_file=None, train_mode="loaded_model", seed=42):
     """Evaluate a trained model for multiple episodes."""
     gym_env.set_deterministic_partner(deterministic_partner)
     mdp = gym_env.base_env.mdp
@@ -164,7 +165,7 @@ def evaluate(model, gym_env, num_episodes=5, deterministic_partner=True, determi
         agg_metrics['avg_time_between'].append(avg_interval)
 
     print_evaluation_summary(agg_metrics)
-    render_heatmap(heatmap, output_file=heatmap_output_file)
+    render_heatmap(heatmap, output_file=heatmap_output_file, train_mode=train_mode, seed=seed)
 
     summary = {
         "avg_soup_score": float(np.mean(agg_metrics["soup_scores"])),
@@ -293,21 +294,20 @@ def evaluation_result(csv_file, result_row):
     print(f" Coordination:  {coordination_score:.4f}")
     print(f" File Saved:    {csv_file}")
 
-def render_heatmap(heatmap, output_file="baseline_heatmap.pdf"):
-    """Render and save a heatmap of visited grid tiles."""
-    output_dir = Path("../heatmaps")
+def render_heatmap(heatmap, output_file="baseline_heatmap.pdf", train_mode="loaded_model", seed=42):
+    """
+    Render and save a heatmap as:
+        ../heatmaps/<train_mode>_seed<seed>/<output_file>.pdf
+    """
+    output_dir = Path("../heatmaps") / f"{train_mode}_seed{seed}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if output_file is None or str(output_file).strip() == "":
-        output_path = output_dir / "baseline_heatmap.pdf"
+        output_filename = "baseline_heatmap.pdf"
     else:
-        path_obj = Path(output_file)
-        if path_obj.suffix == "":
-            path_obj = path_obj.with_suffix(".pdf")
-        if not path_obj.is_absolute() and path_obj.parent == Path("."):
-            path_obj = output_dir / path_obj
-        output_path = path_obj
-
+        output_filename = Path(output_file).with_suffix(".pdf").name
+    output_path = output_dir / output_filename
+    
     plt.imshow(heatmap.T, cmap='hot', interpolation='nearest')
     plt.title("Ego Agent Movement Heatmap (Most Visited Tiles)")
     plt.colorbar(label="Visits")

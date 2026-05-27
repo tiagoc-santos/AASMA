@@ -169,7 +169,7 @@ def train_baseline(total_timesteps=2000000,
             env,
             learning_rate=1e-4,
             n_steps=2048 // num_cpu,
-            batch_size=128,
+            batch_size=256,
             n_epochs=5,
             ent_coef=0.01,
             target_kl=0.03,
@@ -313,10 +313,12 @@ if __name__ == "__main__":
     if args.model is None:
         train_mode_label = args.train_partner_mode
     else:
-        if model_stem_parts is None:
-            model_stem_parts = Path(args.model).stem.split("_")
-        if len(model_stem_parts) >= 3:
-            train_mode_label = "_".join(model_stem_parts[1:-1])
+        model_stem_parts = Path(args.model).stem.split("_")
+        if (model_stem_parts[0] in {"cnn", "mlp", "rnn"} 
+            and len(model_stem_parts) >= 4
+            and model_stem_parts[-1].startswith("seed")
+            and model_stem_parts[-2].isdigit()):
+            train_mode_label = "_".join(model_stem_parts[1:-2])
         else:
             train_mode_label = "loaded_model"
 
@@ -346,7 +348,8 @@ if __name__ == "__main__":
             num_episodes=args.eval_episodes,
             deterministic_partner=deterministic_partner,
             deterministic_ego = deterministic_ego,
-            heatmap_output_file=heatmap_filename,)
+            heatmap_output_file=heatmap_filename,
+            train_mode=train_mode_label, seed=args.seed)
 
         result_row = {
             "timestamp": datetime.now().isoformat(timespec="seconds"),

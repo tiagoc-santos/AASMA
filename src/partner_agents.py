@@ -99,6 +99,50 @@ def bfs_next_action(start, target_pos, mdp, state, player_idx):
 
     return Action.STAY
 
+def bfs_move_to_floor(start, goal_pos, mdp, state, player_idx):
+    """
+    Return one movement action toward an exact walkable floor tile.
+
+    Unlike bfs_next_action(), this helper does not stop adjacent to the
+    target and does not INTERACT. It is intended for parking/yielding.
+    """
+    if start == goal_pos:
+        return Action.STAY
+
+    terrain = mdp.terrain_mtx
+    height = len(terrain)
+    width = len(terrain[0]) if height else 0
+
+    gx, gy = goal_pos
+
+    if not (0 <= gx < width and 0 <= gy < height and terrain[gy][gx] == " "):
+        raise ValueError(f"Parking position {goal_pos} must be a walkable floor tile.")
+
+    other_positions = {player.position for idx, player in enumerate(state.players) if idx != player_idx}
+
+    queue = deque([(start, None)])
+    visited = {start}
+
+    while queue:
+        (cx, cy), first_action = queue.popleft()
+
+        for direction, (dx, dy) in DIR_VECTORS.items():
+            next_pos = (cx + dx, cy + dy)
+            nx, ny = next_pos
+
+            if not (0 <= nx < width and 0 <= ny < height and terrain[ny][nx] == " "
+                and next_pos not in visited and next_pos not in other_positions):
+                    continue
+
+            action_from_start = (direction if first_action is None else first_action)
+            if next_pos == goal_pos:
+                return action_from_start
+
+            visited.add(next_pos)
+            queue.append((next_pos, action_from_start))
+
+    return Action.STAY
+
 # Gives the closest objective when there are multiple
 def closest(positions, reference):
     """Return the position in `positions` closest (L1) to `reference`."""
@@ -115,12 +159,35 @@ def _only_pot(mdp):
     """Return the single pot location and fail clearly on a different layout."""
     pots = mdp.get_pot_locations()
     if len(pots) != 1:
-        raise ValueError(
-            "The one-pot unseen test suite expects exactly one pot, "
-            f"but found {len(pots)}."
-        )
+        raise ValueError("The one-pot unseen test suite expects exactly one pot, "
+            f"but found {len(pots)}.")
     return pots[0]
 
+def choose_safe_parking_tile(mdp):
+    """
+    Select a walkable floor tile away from the one-pot work area.
+
+    For a fixed evaluation layout, this gives the inactive teammate somewhere
+    to wait without occupying pot, dish or serving access positions.
+    """
+    terrain = mdp.terrain_mtx
+    height = len(terrain)
+    width = len(terrain[0]) if height else 0
+
+    critical_locations = (list(mdp.get_pot_locations()) + list(mdp.get_dish_dispenser_locations()) 
+                          + list(mdp.get_serving_locations()) + list(mdp.get_onion_dispenser_locations()))
+
+    floor_tiles = [(x, y) for y in range(height) for x in range(width) if terrain[y][x] == " "]
+
+    def distance_to_nearest_station(pos):
+        px, py = pos
+        return min(abs(px - sx) + abs(py - sy) for sx, sy in critical_locations)
+
+    # Never park directly adjacent to a task station when avoidable.
+    safe_tiles = [tile for tile in floor_tiles if distance_to_nearest_station(tile) >= 2]
+    candidates = safe_tiles if safe_tiles else floor_tiles
+
+    return max(candidates, key=distance_to_nearest_station,)
 
 def _pot_status(state, mdp, pot_pos):
     """Return the status name of the shared pot."""
@@ -403,11 +470,29 @@ class AlternatingCookerAgent(_OnePotStateAgent):
         status = _pot_status(state, mdp, pot)
         held_name = _held_name(player)
 
-        # Finish an already-started onion commitment.
-        if held_name == "onion":
-            return pot if status in POT_NEEDS_ONION else None
+        if status == "3_items":
+            if held_name is None:
+                return pot
 
-        # This policy never performs serving tasks.
+            # Defensive fallback only: dispose of an unnecessary onion if one
+            # somehow exists while the pot is already full.
+            if held_name == "onion":
+                empty_counters = [counter_pos for counter_pos in mdp.get_counter_locations()
+                    if not state.has_object(counter_pos)]
+                return closest(empty_counters, player.position)
+
+            return None
+
+        # Finish an already-carried onion only if the pot still needs ingredients.
+        if held_name == "onion":
+            if status in POT_NEEDS_ONION:
+                return pot
+
+            empty_counters = [counter_pos for counter_pos in mdp.get_counter_locations()
+                if not state.has_object(counter_pos)]
+            return closest(empty_counters, player.position)
+
+        # Cooker agents do not perform dish/soup serving work.
         if held_name is not None:
             return None
 
@@ -416,20 +501,9 @@ class AlternatingCookerAgent(_OnePotStateAgent):
         if ingredient_count is not None and ingredient_count < 3:
             active_worker = ingredient_count % 2
             if self.worker_slot == active_worker:
-                return closest(
-                    mdp.get_onion_dispenser_locations(),
-                    player.position,
-                )
-            # Clear the shared-pot area while the other cooker is active.
-            return closest(mdp.get_onion_dispenser_locations(), player.position)
+                return closest(mdp.get_onion_dispenser_locations(),player.position,)
 
-        # One designated partner initiates cooking once the pot is full.
-        if status == "3_items" and self.worker_slot == 1:
-            return pot
-
-        # Once no cooking work is available, keep clear of the shared pot.
-        if held_name is None:
-            return closest(mdp.get_onion_dispenser_locations(), player.position)
+            return None
 
         return None
 
@@ -463,19 +537,17 @@ class PrepositioningServerAgent(_OnePotStateAgent):
         held_name = _held_name(player)
 
         if held_name == "soup":
-            return closest(mdp.get_serving_locations(), player.position)
+            return closest(mdp.get_serving_locations(), player.position,)
 
         if held_name == "dish":
-            return pot if status in {"ready", "both_ready"} else None
+            return pot if status == "ready" else None
 
-        # This policy never handles onions or other carried objects.
         if held_name is not None:
             return None
 
-        # Both servers may preposition a dish; BFS treats one another as
-        # temporary obstacles, making this a distinct coordination convention.
-        if status in {"3_items", "cooking", "ready", "both_ready"}:
-            return closest(mdp.get_dish_dispenser_locations(), player.position)
+        if status in {"cooking", "ready"}:
+            return closest(
+                mdp.get_dish_dispenser_locations(),player.position,)
 
         return None
 
@@ -488,113 +560,192 @@ class PrepositioningServerAgent(_OnePotStateAgent):
 
 class TimedRoleSwitchingAgent(_OnePotStateAgent):
     """
-    Dynamic unseen teammate.
+    Dynamic unseen teammate for a one-pot layout.
 
-    Before switch_step it follows the AlternatingCooker convention.
-    From switch_step onward it follows the PrepositioningServer convention.
-    If it is already carrying an object when the switch happens, it finishes
-    that held-object commitment first.
+    Before switch_step:
+        Both agents cooperate as alternating cookers.
 
-    With two instances, the ego initially needs to serve; after the switch it
-    needs to supply/cook ingredients.
+    After switch_step:
+        worker_slot=0 becomes the sole server.
+        worker_slot=1 parks away from the work area.
+
+    This avoids duplicate dish collection and prevents the inactive teammate
+    from blocking pot access.
     """
 
-    def __init__(self, worker_slot, switch_step=200):
+    def __init__(self, worker_slot, switch_step=200, parking_pos=None):
         if worker_slot not in (0, 1):
             raise ValueError("worker_slot must be 0 or 1")
+
         if switch_step <= 0:
             raise ValueError("switch_step must be positive")
+
         self.worker_slot = worker_slot
         self.switch_step = switch_step
-        self._cooker = AlternatingCookerAgent(worker_slot)
-        self._server = PrepositioningServerAgent(worker_slot)
+        self.parking_pos = parking_pos
 
-    def predict(self, obs, state=None, player_idx=None, mdp=None, deterministic=False):
+        self._cooker = AlternatingCookerAgent(worker_slot)
+        self._server = PrepositioningServerAgent(server_slot=worker_slot)
+
+    def _get_parking_pos(self, mdp):
+        if self.parking_pos is None:
+            self.parking_pos = choose_safe_parking_tile(mdp)
+
+        return self.parking_pos
+
+    def _drop_excess_object_target(self, state, player, mdp):
+        empty_counters = [counter_pos for counter_pos in mdp.get_counter_locations()
+            if not state.has_object(counter_pos)]
+        if not empty_counters:
+            return None
+
+        return closest(empty_counters, player.position)
+
+    def predict(self, obs, state=None, player_idx=None, mdp=None, deterministic=False,):
         if state is None or mdp is None:
             return self._random_fallback()
 
-        held_name = _held_name(state.players[player_idx])
+        player = state.players[player_idx]
+        held_name = _held_name(player)
 
-        # Honour current cargo across the switch boundary.
-        if held_name == "onion":
-            agent = self._cooker
-        elif held_name in {"dish", "soup"}:
-            agent = self._server
-        elif state.timestep < self.switch_step:
-            agent = self._cooker
-        else:
-            agent = self._server
+        pot = _only_pot(mdp)
+        pot_status = _pot_status(state, mdp, pot)
 
-        return agent.predict(
-            obs,
-            state=state,
-            player_idx=player_idx,
-            mdp=mdp,
-            deterministic=deterministic,
-        )
+        # Both partners cook before the switch.
+        if state.timestep < self.switch_step:
+            return self._cooker.predict(obs, state=state, player_idx=player_idx,
+                                        mdp=mdp, deterministic=deterministic,)
 
+        # Finish starting a soup completed immediately before the switch.
+        # worker_slot=0 places the third onion in the alternating convention.
+        if (self.worker_slot == 0 and held_name is None 
+            and pot_status == "3_items"):
+                return self._act_toward(pot, state, player_idx, mdp,)
+
+        # worker_slot=1 withdraws from the task after the switch.
+        if self.worker_slot == 1:
+            # Defensive cleanup in case it unexpectedly holds something.
+            if held_name is not None:
+                drop_target = self._drop_excess_object_target(state, player, mdp,)
+                return self._act_toward(drop_target, state, player_idx, mdp,)
+
+            parking_pos = self._get_parking_pos(mdp)
+            parking_action = bfs_move_to_floor(player.position, parking_pos, mdp, 
+                                               state, player_idx,)
+
+            return ACTION_TO_IDX[parking_action], None
+
+        # worker_slot=0 is the sole post-switch server.
+        return self._server.predict(obs, state=state, player_idx=player_idx, 
+                                    mdp=mdp, deterministic=deterministic,)
 
 class YieldingGeneralistAgent(_OnePotStateAgent):
     """
-    Novel complete-task partner using a low-contention shared-pot convention.
+    Complete-task partner for a one-pot layout using explicit role sharing.
 
-    Two instances can complete the whole recipe without the ego:
-        - onion supply alternates by ingredient count;
-        - worker_slot=1 starts cooking;
-        - worker_slot=0 alone handles dish pickup and delivery.
+    worker_slot=0:
+        - supplies onion 1 and onion 3
+        - activates the full pot
+        - obtains dishes and delivers soup
 
-    This differs from GreedyChefAgent, where multiple partners independently
-    chase the same highest-priority task.
+    worker_slot=1:
+        - supplies onion 2
+        - parks away from the work area while inactive
+
+    Together, the two partners can complete soups without the ego while
+    avoiding duplicate onion collection and duplicate dish collection.
     """
 
-    def __init__(self, worker_slot):
+    def __init__(self, worker_slot, parking_pos=None):
         if worker_slot not in (0, 1):
             raise ValueError("worker_slot must be 0 or 1")
-        self.worker_slot = worker_slot
 
-    def _choose_target(self, state, player, mdp):
-        pot = _only_pot(mdp)
-        status = _pot_status(state, mdp, pot)
+        self.worker_slot = worker_slot
+        self.parking_pos = parking_pos
+
+    def _get_parking_pos(self, mdp):
+        if self.parking_pos is None:
+            self.parking_pos = choose_safe_parking_tile(mdp)
+
+        return self.parking_pos
+
+    def _park(self, state, player_idx, mdp):
+        parking_pos = self._get_parking_pos(mdp)
+        action = bfs_move_to_floor(state.players[player_idx].position,
+                                   parking_pos,mdp,state,player_idx,)
+        
+        return ACTION_TO_IDX[action], None
+
+    def _drop_excess_object_target(self, state, player, mdp):
+        empty_counters = [counter_pos for counter_pos in mdp.get_counter_locations()
+                          if not state.has_object(counter_pos)]
+
+        if not empty_counters:
+            return None
+        return closest(empty_counters, player.position)
+
+    def predict(self,obs,state=None,player_idx=None,mdp=None,deterministic=False,):
+        if state is None or mdp is None:
+            return self._random_fallback()
+
+        player = state.players[player_idx]
         held_name = _held_name(player)
 
+        pot = _only_pot(mdp)
+        status = _pot_status(state, mdp, pot)
+        ingredient_count = _ingredient_count_from_status(status)
+
         if held_name == "soup":
-            return closest(mdp.get_serving_locations(), player.position)
+            if self.worker_slot == 0:
+                target = closest(mdp.get_serving_locations(),player.position,)
+                return self._act_toward(target,state,player_idx,mdp,)
+
+            drop_target = self._drop_excess_object_target(state,player,mdp,)
+            return self._act_toward(drop_target,state,player_idx,mdp,)
 
         if held_name == "dish":
-            return pot if status in {"ready", "both_ready"} else None
+            if self.worker_slot == 0:
+                target = pot if status == "ready" else None
+                return self._act_toward(target,state,player_idx,mdp,)
+
+            drop_target = self._drop_excess_object_target(state,player,mdp,)
+            return self._act_toward(drop_target,state,player_idx,mdp,)
 
         if held_name == "onion":
-            return pot if status in POT_NEEDS_ONION else None
+            if status in POT_NEEDS_ONION:
+                return self._act_toward(pot,state,player_idx,mdp,)
+
+            # Defensive recovery only. With correct turn-taking,
+            # unnecessary onions should not normally be collected.
+            drop_target = self._drop_excess_object_target(state,player,mdp,)
+            return self._act_toward(drop_target,state,player_idx,mdp,)
 
         if held_name is not None:
-            return None
-
-        ingredient_count = _ingredient_count_from_status(status)
+            return ACTION_TO_IDX[Action.STAY], None
 
         if ingredient_count is not None and ingredient_count < 3:
             active_worker = ingredient_count % 2
+
             if self.worker_slot == active_worker:
-                return closest(
-                    mdp.get_onion_dispenser_locations(),
-                    player.position,
-                )
-            # Yield away from the single shared pot while the other worker acts.
-            return closest(mdp.get_onion_dispenser_locations(), player.position)
+                target = closest(mdp.get_onion_dispenser_locations(),
+                                 player.position,)
+                return self._act_toward(target,state,player_idx,mdp,)
 
-        if status == "3_items" and self.worker_slot == 1:
-            return pot
+            # Inactive worker clears the work area instead of fetching onion.
+            return self._park(state,player_idx,mdp,)
 
-        # Only one partner approaches dish/soup stations, avoiding duplication.
-        if (
-            status in {"cooking", "ready", "both_ready"}
-            and self.worker_slot == 0
-        ):
-            return closest(mdp.get_dish_dispenser_locations(), player.position)
+        if status == "3_items":
+            if self.worker_slot == 0:
+                return self._act_toward(pot,state,player_idx,mdp,)
 
-        return None
+            return self._park(state,player_idx,mdp,)
 
-    def predict(self, obs, state=None, player_idx=None, mdp=None, deterministic=False):
-        if state is None or mdp is None:
-            return self._random_fallback()
-        target = self._choose_target(state, state.players[player_idx], mdp)
-        return self._act_toward(target, state, player_idx, mdp)
+        if status in {"cooking", "ready"}:
+            # Only worker_slot=0 handles dishes and delivery.
+            if self.worker_slot == 0:
+                target = closest(mdp.get_dish_dispenser_locations(),player.position,)
+                return self._act_toward(target,state,player_idx,mdp,)
+
+            return self._park(state,player_idx,mdp,)
+
+        return self._park(state,player_idx,mdp,)
