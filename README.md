@@ -12,7 +12,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Copy the updated library files into the virtual environment (this is needed since the original overcooked-ai library does not offer support for more than 2 player):
+Copy the updated library files into the virtual environment (this is needed since the original overcooked-ai library does not offer support for more than 2 players):
 
 ```bash
 PYTHON=python3
@@ -33,9 +33,10 @@ python training.py
 - VecNormalize statistics are saved alongside the model as `models/<architecture>_<train_partner_mode>_seed<seed>/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>_vecnormalize.pkl`.
 - Evaluation always runs after training/loading.
 - A gameplay GIF is saved to `gameplay_gifs/<train_mode_label>_seed<seed>/<architecture>_<train_mode_label>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.gif`.
-- A heatmap PDF is saved to `heatmaps/<architecture>_<train_mode_label>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.pdf`.
+- A heatmap PDF is saved to `heatmaps/<train_mode_label>_seed<seed>/<architecture>_<train_mode_label>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.pdf`.
 - Evaluation summaries are saved (or updated) in `evaluation_results.csv`.
-- When `--model` is used, `train_mode_label` is derived from the filename stem: the architecture prefix is taken from the first segment, and the training label is everything between that and the trailing `seed<seed>` suffix (for models saved by this script, this becomes `<train_partner_mode>_<timesteps>`).
+- When `--model` is used, `train_mode_label` is derived from the filename stem. If it matches `<architecture>_<label>_<timesteps>_seed<seed>.zip`, the label becomes `<label>` (for models saved by this script, this is just `<train_partner_mode>`). Otherwise, it falls back to `loaded_model`.
+- When `--train_partner_mode` is `adhoc_curriculum`, intermediate checkpoints are also saved in the model directory: `adhoc_low_checkpoint.zip`, `adhoc_mid_checkpoint.zip`, and `adhoc_final_checkpoint.zip`, plus matching `_vecnormalize.pkl` files.
 
 ## Common usage patterns
 
@@ -45,10 +46,10 @@ Train with randomized partner teams:
 python training.py --train_partner_mode random_pool
 ```
 
-Train with an MLP policy instead of CNN:
+Train with an CNN policy instead of RNN:
 
 ```bash
-python training.py --architecture mlp
+python training.py --architecture cnn
 ```
 
 Evaluate against a specific partner team:
@@ -97,7 +98,7 @@ All flags are optional; defaults are shown below.
 	- Total timesteps to train when creating a new model.
 - `--model` (str, default: None)
 	- Path to a pre-trained model zip. If provided, training is skipped and the model is evaluated.
-	- Note: when `--model` is used, `architecture` is inferred from the first filename segment, and the training label used in outputs is everything between that and the trailing `seed<seed>` suffix. Models saved by this script follow `<architecture>_<train_partner_mode>_<timesteps>_seed<seed>.zip`.
+	- Note: when `--model` is used, `architecture` is inferred from the first filename segment only if it is `cnn`, `mlp`, or `rnn`. The `train_mode_label` used in outputs is derived from filenames that match `<architecture>_<label>_<timesteps>_seed<seed>.zip`; otherwise it is `loaded_model`.
 - `--layout_name` (str, default: three_chefs)
 	- Overcooked layout name. Can refer to a built-in layout or a local file in `layouts/` (from `src/`, this resolves to `../layouts/<name>.layout`).
 - `--train_partner_mode` (str, default: self_play)
@@ -109,7 +110,8 @@ All flags are optional; defaults are shown below.
 - `--eval_partner_epsilon` (float, default: 0.25)
 	- Epsilon used when `--eval_partner noisy_greedy`.
 - `--eval_suite` (str, default: single)
-	- Evaluation suite. Choices: `single` (use `--eval_partner`), `common` (fixed suite) or `test`.
+	- Evaluation suite. Choices: `single` (use `--eval_partner`), `common` (greedy, specialists, heldout_noisy_greedy, heldout_greedy_noisy), or `test` (alternating_cookers, prepositioning_servers, role_switchers, yielding_generalists).
+	- Note: the `test` suite partners expect a single-pot layout and will raise an error otherwise.
 - `--deterministic_partner` (str, default: false)
 	- Whether partner policies act deterministically during evaluation/rendering. Choices: `true`, `false`.
 - `--eval_episodes` (int, default: 100)
@@ -118,8 +120,8 @@ All flags are optional; defaults are shown below.
 	- Output CSV for evaluation summaries.
 - `--num_cpu` (int, default: 4)
 	- Number of CPU cores used for training environments.
-- `--architecture` (str, default: cnn)
-	- Policy architecture. Choices: `mlp`, `cnn`.
+- `--architecture` (str, default: rnn)
+	- Policy architecture. Choices: `mlp`, `cnn`, `rnn`.
 - `--deterministic_ego` (str, default: true)
 	- Whether the ego policy acts deterministically during evaluation/rendering. Choices: `true`, `false`.
 - `--seed` (int, default: 42)
@@ -130,5 +132,6 @@ All flags are optional; defaults are shown below.
 - Trained models: `models/<architecture>_<train_partner_mode>_seed<seed>/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>.zip`
 - VecNormalize stats: `models/<architecture>_<train_partner_mode>_seed<seed>/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>_vecnormalize.pkl`
 - Gameplay GIFs: `gameplay_gifs/<train_mode_label>_seed<seed>/<architecture>_<train_mode_label>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.gif`
-- Heatmaps: `heatmaps/<architecture>_<train_mode_label>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.pdf`
+- Heatmaps: `heatmaps/<train_mode_label>_seed<seed>/<architecture>_<train_mode_label>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.pdf`
+- Ad-hoc curriculum checkpoints: `models/<architecture>_adhoc_curriculum_seed<seed>/adhoc_<low|mid|final>_checkpoint.zip` and matching `_vecnormalize.pkl` files
 - Evaluation results: `evaluation_results.csv`

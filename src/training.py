@@ -277,7 +277,7 @@ if __name__ == "__main__":
                         help='CSV file where evaluation summaries are stored')
     parser.add_argument('--num_cpu', type=int, default=4,
                         help='Number of cpu cores used during training')
-    parser.add_argument('--architecture', type=str, default='cnn',
+    parser.add_argument('--architecture', type=str, default='rnn',
                         help='Type of architecture to be used',
                         choices=['mlp', 'cnn', 'rnn'])
     parser.add_argument('--deterministic_ego', type=str, default='true',
