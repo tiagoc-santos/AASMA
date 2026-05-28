@@ -1,5 +1,0 @@
-timestamp,layout_name,eval_partner,num_episodes,deterministic_partner,deterministic_ego,seed,architecture,train_partner_mode,avg_soup_score,avg_coordination_score,std_total_score,avg_time_to_first,avg_time_between,avg_stood_still,avg_bumps,avg_misplaced,avg_deliveries,success_rate
-2026-05-28T08:16:18,three_chefs,prepositioning_servers,100,False,True,101,rnn,self_play,234.8,0.9940786925091868,8.772684879784522,48.94,31.319818181818185,0.0,7.01,0.0,11.74,1.0
-2026-05-28T08:21:15,three_chefs,yielding_generalists,100,False,True,101,rnn,self_play,220.0,0.9991739072382638,0.0,46.69,34.002,0.0,0.91,0.0,11.0,1.0
-2026-05-28T08:18:48,three_chefs,role_switchers,100,False,True,101,rnn,self_play,120.0,0.9435118304060901,0.0,221.43,34.199999999999996,0.0,37.04,0.0,6.0,1.0
-2026-05-28T08:13:52,three_chefs,alternating_cookers,100,False,True,101,rnn,self_play,0.0,0.0,0.0,400.0,0.0,0.0,52.03,0.0,0.0,0.0

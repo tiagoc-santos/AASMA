@@ -287,12 +287,24 @@ if __name__ == "__main__":
     args = parser.parse_args()
     deterministic_partner = args.deterministic_partner.lower() == 'true'
     deterministic_ego = args.deterministic_ego.lower() == 'true'
+    model_stem_parts = None
+    
+    if args.model is not None:
+        model_stem_parts = Path(args.model).stem.split("_")
+        if model_stem_parts[0] in {"cnn", "mlp", "rnn"}:
+            args.architecture = model_stem_parts[0]
+        seed_token = model_stem_parts[-1]
+        if seed_token.startswith("seed") and seed_token[4:].isdigit():
+            args.seed = int(seed_token[4:])
+        else:
+            print(f"Could not infer seed from model filename: " 
+                  f"{Path(args.model).name}. " f"Using default seed={args.seed}.")
     seed = args.seed
     random.seed(seed)
     np.random.seed(seed)
     th.manual_seed(seed)
     set_random_seed(seed)
-    model_stem_parts = None
+
     if args.model is None:
         trained_model, env, model_filename = train_baseline(
             args.timesteps,
@@ -301,22 +313,14 @@ if __name__ == "__main__":
             layout_name=args.layout_name,
             num_cpu=args.num_cpu,
             architecture=args.architecture,
-            seed=args.seed)
-    else:
-        model_stem_parts = Path(args.model).stem.split("_")
-        if model_stem_parts[0] in {"cnn", "mlp", "rnn"}:
-            args.architecture = model_stem_parts[0]
-        trained_model = load_trained_policy(args.model, args.architecture, device="auto")
-        env = OvercookedSelfPlayWrapper(layout_name=args.layout_name, architecture=args.architecture) 
-        model_filename = Path(args.model).name
-
-    if args.model is None:
+            seed=seed,)
         train_mode_label = args.train_partner_mode
     else:
-        model_stem_parts = Path(args.model).stem.split("_")
-        if (model_stem_parts[0] in {"cnn", "mlp", "rnn"} 
-            and len(model_stem_parts) >= 4
-            and model_stem_parts[-1].startswith("seed")
+        trained_model = load_trained_policy(args.model, args.architecture, device="auto",)
+        env = OvercookedSelfPlayWrapper(layout_name=args.layout_name, architecture=args.architecture,)
+        model_filename = Path(args.model).name
+        if (model_stem_parts is not None and model_stem_parts[0] in {"cnn", "mlp", "rnn"} 
+            and len(model_stem_parts) >= 4 and model_stem_parts[-1].startswith("seed")
             and model_stem_parts[-2].isdigit()):
             train_mode_label = "_".join(model_stem_parts[1:-2])
         else:
@@ -366,4 +370,4 @@ if __name__ == "__main__":
         evaluation_result("../" + args.results_csv, result_row)
 
         gif_filename = (f"{args.architecture}_{train_mode_label}_{eval_partner_type}_"f"seed{args.seed}_{ego_eval_label}_{partner_eval_label}.gif")
-        save_agent_gameplay(trained_model, env, output_file=gif_filename, train_mode=train_mode_label, seed=seed, deterministic_partner=deterministic_partner, deterministic_ego=deterministic_ego,)
+        save_agent_gameplay(trained_model, env, output_file=gif_filename, train_mode=train_mode_label, seed=args.seed, deterministic_partner=deterministic_partner, deterministic_ego=deterministic_ego,)
