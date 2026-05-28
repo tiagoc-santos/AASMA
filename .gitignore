@@ -220,4 +220,9 @@ __marimo__/
 .streamlit/secrets.toml
 
 /.venv
-*.pdf
+*.pkl
+temp*
+*_low_*
+*_mid_*
+*_final_*
+cnn*

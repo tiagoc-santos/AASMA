@@ -1,8 +1,10 @@
 gymnasium
 stable-baselines3[extra]
+torch>=2.3
 overcooked-ai
 numpy<2.0.0
 matplotlib
 scipy
 pygame
 imageio
+sb3_contrib
