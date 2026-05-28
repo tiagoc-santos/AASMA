@@ -8,18 +8,16 @@ cd "$SCRIPT_DIR"
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 TIMESTEPS="${TIMESTEPS:-3000000}"
 LAYOUT="${LAYOUT:-three_chefs}"
-ARCHITECTURE="${ARCHITECTURE:-cnn}"
+ARCHITECTURE="${ARCHITECTURE:-rnn}"
 NUM_CPU="${NUM_CPU:-4}"
 EVAL_SUITE="${EVAL_SUITE:-test}"
 EVAL_EPISODES="${EVAL_EPISODES:-100}"
-RESULTS_CSV="${RESULTS_CSV:-evaluation_results.csv}"
+RESULTS_CSV="${RESULTS_CSV:-selfplay_results.csv}"
 RESET_RESULTS="${RESET_RESULTS:-false}"
-
 ADHOC_MODE="${ADHOC_MODE:-adhoc_curriculum}"
 SELF_PLAY_MODE="${SELF_PLAY_MODE:-self_play}"
 
-ADHOC_SEEDS=(101 202)
-SELF_PLAY_SEEDS=(42 101 202)
+SELF_PLAY_SEEDS=(101 202)
 
 LOG_DIR="../logs/final_training"
 mkdir -p "$LOG_DIR" "../models" "../heatmaps" "../gameplay_gifs"
@@ -60,8 +58,6 @@ run_experiment() {
 
 echo "============================================================"
 echo "Remaining final experiment runner"
-echo "Ad hoc mode:     ${ADHOC_MODE}"
-echo "Ad hoc seeds:    ${ADHOC_SEEDS[*]}"
 echo "Self-play mode:  ${SELF_PLAY_MODE}"
 echo "Self-play seeds: ${SELF_PLAY_SEEDS[*]}"
 echo "Timesteps:       ${TIMESTEPS}"
@@ -71,10 +67,6 @@ echo "Eval suite:      ${EVAL_SUITE}"
 echo "Eval episodes:   ${EVAL_EPISODES}"
 echo "Results CSV:     ../${RESULTS_CSV}"
 echo "============================================================"
-
-for seed in "${ADHOC_SEEDS[@]}"; do
-    run_experiment "$ADHOC_MODE" "$seed"
-done
 
 for seed in "${SELF_PLAY_SEEDS[@]}"; do
     run_experiment "$SELF_PLAY_MODE" "$seed"
