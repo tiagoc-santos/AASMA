@@ -90,6 +90,16 @@ Evaluate with the test partner suite:
 python training.py --eval_suite test
 ```
 
+Run passive-ego baseline evaluation against test teams:
+
+```bash
+python passive_baseline.py \
+	--model ../models/rnn_adhoc_curriculum_seed42/rnn_adhoc_curriculum_3000000_seed42.zip \
+	--model_label self_play \
+	--model_seed 42 \
+	--suite unseen_final
+```
+
 ## Flags
 
 All flags are optional; defaults are shown below.
@@ -127,6 +137,29 @@ All flags are optional; defaults are shown below.
 - `--seed` (int, default: 42)
 	- Random seed used for training and evaluation.
 
+Additional flags for passive baseline evaluation (`src/passive_baseline.py`):
+
+- `--model` (str, required)
+	- Path to a pre-trained model zip.
+- `--model_label` (str, required)
+	- Label written to the output CSV (use the training mode or model family name).
+- `--model_seed` (int, required)
+	- Seed used for the trained model; inferred from the filename when possible.
+- `--layout_name` (str, default: three_chefs)
+	- Layout used for evaluation.
+- `--architecture` (str, default: rnn)
+	- Policy architecture; inferred from the model filename when it starts with `cnn`, `mlp`, or `rnn`.
+- `--eval_episodes` (int, default: 100)
+	- Number of evaluation episodes per team.
+- `--suite` (str, default: both)
+	- Team suite to evaluate. Choices: `compatibility`, `contribution`, `unseen_final`, `both`.
+- `--deterministic_ego` (str, default: true)
+	- Whether the trained ego acts deterministically.
+- `--deterministic_partner` (str, default: false)
+	- Whether partner agents act deterministically.
+- `--output_csv` (str, default: ../passive_baseline_results.csv)
+	- Output CSV file for passive baseline results.
+
 ## Outputs
 
 - Trained models: `models/<architecture>_<train_partner_mode>_seed<seed>/<architecture>_<train_partner_mode>_<timesteps>_seed<seed>.zip`
@@ -135,3 +168,4 @@ All flags are optional; defaults are shown below.
 - Heatmaps: `heatmaps/<train_mode_label>_seed<seed>/<architecture>_<train_mode_label>_<eval_partner>_seed<seed>_<ego_det|ego_stoch>_<partner_det|partner_stoch>.pdf`
 - Ad-hoc curriculum checkpoints: `models/<architecture>_adhoc_curriculum_seed<seed>/adhoc_<low|mid|final>_checkpoint.zip` and matching `_vecnormalize.pkl` files
 - Evaluation results: `evaluation_results.csv`
+- Passive baseline results: `passive_baseline_results.csv`
