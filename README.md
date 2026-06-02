@@ -1,6 +1,6 @@
-# AASMA
+# Ad Hoc Overcooked
 
-Train and evaluate an ego agent for ad-hoc teamwork in Overcooked. The main entry point is `src/training.py`, which can both train a new model and evaluate/render gameplay.
+Projec made for the Autonomous Agents and Multi-Agent Systems course. Train and evaluate an ego agent for ad-hoc teamwork in Overcooked. The main entry point is `src/training.py`, which can both train a new model and evaluate/render gameplay.
 
 ## Quick start
 
