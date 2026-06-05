@@ -12,12 +12,13 @@ ARCHITECTURE="${ARCHITECTURE:-rnn}"
 NUM_CPU="${NUM_CPU:-4}"
 EVAL_SUITE="${EVAL_SUITE:-test}"
 EVAL_EPISODES="${EVAL_EPISODES:-100}"
-RESULTS_CSV="${RESULTS_CSV:-selfplay_results.csv}"
+RESULTS_CSV="${RESULTS_CSV:-final_rnn_results.csv}"
 RESET_RESULTS="${RESET_RESULTS:-false}"
+
 ADHOC_MODE="${ADHOC_MODE:-adhoc_curriculum}"
 SELF_PLAY_MODE="${SELF_PLAY_MODE:-self_play}"
 
-SELF_PLAY_SEEDS=(101 202)
+SEEDS=(42 101)
 
 LOG_DIR="../logs/final_training"
 mkdir -p "$LOG_DIR" "../models" "../heatmaps" "../gameplay_gifs"
@@ -35,11 +36,11 @@ run_experiment() {
 
     echo
     echo "============================================================"
-    echo "Starting ${mode} | seed ${seed}"
+    echo "Starting ${mode} | architecture ${ARCHITECTURE} | seed ${seed}"
     echo "Log: ${log_file}"
     echo "============================================================"
 
-    "$PYTHON_BIN" training.py \
+    PYTHONUNBUFFERED=1 "$PYTHON_BIN" -u training.py \
         --timesteps "$TIMESTEPS" \
         --train_partner_mode "$mode" \
         --architecture "$ARCHITECTURE" \
@@ -53,22 +54,27 @@ run_experiment() {
         --results_csv "$RESULTS_CSV" \
         2>&1 | tee "$log_file"
 
-    echo "Completed ${mode} | seed ${seed}"
+    echo "Completed ${mode} | architecture ${ARCHITECTURE} | seed ${seed}"
 }
 
 echo "============================================================"
-echo "Remaining final experiment runner"
-echo "Self-play mode:  ${SELF_PLAY_MODE}"
-echo "Self-play seeds: ${SELF_PLAY_SEEDS[*]}"
-echo "Timesteps:       ${TIMESTEPS}"
-echo "Layout:          ${LAYOUT}"
-echo "Architecture:    ${ARCHITECTURE}"
-echo "Eval suite:      ${EVAL_SUITE}"
-echo "Eval episodes:   ${EVAL_EPISODES}"
-echo "Results CSV:     ../${RESULTS_CSV}"
+echo "Final matched RNN experiment runner"
+echo "Ad hoc mode:      ${ADHOC_MODE}"
+echo "Self-play mode:   ${SELF_PLAY_MODE}"
+echo "Seeds:            ${SEEDS[*]}"
+echo "Timesteps:        ${TIMESTEPS}"
+echo "Layout:           ${LAYOUT}"
+echo "Architecture:     ${ARCHITECTURE}"
+echo "Eval suite:       ${EVAL_SUITE}"
+echo "Eval episodes:    ${EVAL_EPISODES}"
+echo "Results CSV:      ../${RESULTS_CSV}"
 echo "============================================================"
 
-for seed in "${SELF_PLAY_SEEDS[@]}"; do
+for seed in "${SEEDS[@]}"; do
+    run_experiment "$ADHOC_MODE" "$seed"
+done
+
+for seed in "${SEEDS[@]}"; do
     run_experiment "$SELF_PLAY_MODE" "$seed"
 done
 
