@@ -169,3 +169,6 @@ Additional flags for passive baseline evaluation (`src/passive_baseline.py`):
 - Ad-hoc curriculum checkpoints: `models/<architecture>_adhoc_curriculum_seed<seed>/adhoc_<low|mid|final>_checkpoint.zip` and matching `_vecnormalize.pkl` files
 - Evaluation results: `evaluation_results.csv`
 - Passive baseline results: `passive_baseline_results.csv`
+
+## Final Grade
+20/20
